@@ -49,18 +49,17 @@ dependencies = [
     "transformers>=4.30",
     "huggingface-hub>=0.19",
     "librosa>=0.10",
-    "joblib>=1.2",
 ]
 
 [project.optional-dependencies]
 # Adds dataset preparation + SSL feature dumping used during training.
 # The training pipeline is just: run SSL inference, dump features, fit on
 # them (similar in spirit to k-means on SSL features), so the only extra
-# deps are dataset/labeling utilities, panphon for IPA featuralization,
-# and scikit-learn for the silence detector.
+# deps are dataset/labeling utilities and panphon for IPA featuralization.
+# (The silence detector is now derived from pv_ipa's "speech+" projection,
+#  so we no longer need a separate scikit-learn classifier.)
 train = [
     "praatio>=6.0",
-    "scikit-learn>=1.1",
     "panphon>=0.20",
     "tqdm>=4.64",
 ]

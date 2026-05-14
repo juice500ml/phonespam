@@ -52,6 +52,18 @@ TIMIT_CLOSURE_OF = {
     "ch": "tcl",
 }
 
+# Diphthongs are kept as a single row in the dataframe (so the segmenter can
+# pool features over the full glide), but they expand to two phones when
+# computing the *context* of neighboring rows so that l_n/r_n look up known
+# panphon segments. E.g. for [p, eɪ, t]: l_1 of t is ɪ, l_2 is e, l_3 is p.
+DIPHTHONG_PARTS = {
+    "eɪ": ("e", "ɪ"),
+    "aʊ": ("a", "ʊ"),
+    "aɪ": ("a", "ɪ"),
+    "ɔɪ": ("ɔ", "ɪ"),
+    "oʊ": ("o", "ʊ"),
+}
+
 
 def _get_args(argv=None):
     parser = argparse.ArgumentParser()
@@ -70,11 +82,38 @@ def _add_phone_context(df, n=5):
 
     for _, group in tqdm(df.groupby("audio_path")):
         group = group[~group.ipa.isna()].sort_values("min")
+        if len(group) == 0:
+            continue
+
+        # Build a per-utterance "expanded" label sequence where each
+        # diphthong row contributes both of its component phones, and record
+        # the [start, end] span each original row occupies in that sequence.
+        expanded = []
+        orig_indices = []
+        starts = []
+        ends = []
+        for orig_idx, ipa in zip(group.index, group.ipa):
+            start = len(expanded)
+            expanded.extend(DIPHTHONG_PARTS.get(ipa, (ipa,)))
+            orig_indices.append(orig_idx)
+            starts.append(start)
+            ends.append(len(expanded) - 1)
+
+        expanded_arr = np.asarray(expanded, dtype=object)
+        starts = np.asarray(starts)
+        ends = np.asarray(ends)
+        orig_indices = np.asarray(orig_indices)
+        E = len(expanded_arr)
 
         for i in range(1, n + 1):
-            if len(group) > i:
-                df.loc[group.index[i:], f"l_{i}"] = group.ipa.iloc[:-i].to_numpy()
-                df.loc[group.index[:-i], f"r_{i}"] = group.ipa.iloc[i:].to_numpy()
+            left_pos = starts - i
+            right_pos = ends + i
+            l_vals = expanded_arr[np.clip(left_pos, 0, E - 1)].copy()
+            r_vals = expanded_arr[np.clip(right_pos, 0, E - 1)].copy()
+            l_vals[left_pos < 0] = np.nan
+            r_vals[right_pos >= E] = np.nan
+            df.loc[orig_indices, f"l_{i}"] = l_vals
+            df.loc[orig_indices, f"r_{i}"] = r_vals
 
     for i in range(1, n + 1):
         df.loc[df["ipa"].isna(), f"l_{i}"] = np.nan

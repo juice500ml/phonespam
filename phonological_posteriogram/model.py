@@ -1,6 +1,5 @@
 import warnings
 
-import joblib
 import numpy as np
 import torch
 import torchaudio.compliance.kaldi as kaldi
@@ -12,31 +11,25 @@ warnings.filterwarnings(
 
 
 class SilenceHandler:
-    def __init__(self, detector_path=None, *, model=None):
-        if model is not None:
-            self.model = model
-        elif detector_path is not None:
-            self.model = joblib.load(detector_path)
-        else:
-            raise ValueError("SilenceHandler requires detector_path or model.")
+    """Predicts silent frames from the ``speech+`` dimension of a fitted
+    :class:`PhonologicalVectors`.
 
-    def to_state(self):
-        return {
-            "_class_name": type(self.model).__name__,
-            "coef_": self.model.coef_,
-            "intercept_": self.model.intercept_,
-            "classes_": self.model.classes_,
-        }
+    ``speech+`` is the canonical phonological feature that is positive only
+    for the silence token ``"_"`` — projecting per-frame SSL features onto
+    ``pv_ipa`` therefore yields a per-frame silence probability at the
+    ``speech+`` index that we threshold to a binary mask. This replaces the
+    standalone scikit-learn classifier the original pipeline relied on.
+    """
 
-    @classmethod
-    def from_state(cls, state):
-        from sklearn.linear_model import LogisticRegression
-
-        clf = LogisticRegression()
-        clf.coef_ = np.asarray(state["coef_"])
-        clf.intercept_ = np.asarray(state["intercept_"])
-        clf.classes_ = np.asarray(state["classes_"])
-        return cls(model=clf)
+    def __init__(self, pv_ipa, *, threshold=0.5):
+        if "speech+" not in pv_ipa.featnames:
+            raise ValueError(
+                "pv_ipa is missing the 'speech+' feature; the training "
+                "vocab must include the silence token '_'."
+            )
+        self.pv_ipa = pv_ipa
+        self.threshold = float(threshold)
+        self.speech_plus_idx = pv_ipa.featnames.index("speech+")
 
     def _fill_gaps(self, raw_mask):
         neighbors_silent = np.logical_and(
@@ -45,8 +38,10 @@ class SilenceHandler:
         )
         return np.logical_or(raw_mask, neighbors_silent)
 
-    def predict_silence_mask(self, feats):
-        raw_silence_mask = self.model.predict(feats)
+    def predict_silence_mask(self, feats, threshold=None):
+        thr = self.threshold if threshold is None else float(threshold)
+        proj = self.pv_ipa.project(feats)
+        raw_silence_mask = proj[:, self.speech_plus_idx] > thr
         return self._fill_gaps(raw_silence_mask)
 
     def handle_silence(self, preds, silence_mask, snap_tolerance=1):
@@ -442,12 +437,12 @@ class Segmenter:
             "single_signal_prominence": 0.2,
             "snap_silence": True,
             "snap_tolerance": 2,
+            "silence_threshold": 0.5,
         }
 
     def __init__(
         self,
         train_df=None,
-        silence_detector_path=None,
         *,
         frame_shift,
         sr,
@@ -468,17 +463,18 @@ class Segmenter:
             self.pv_r1 = _from_components["pv_r1"]
             self.W_r1_to_ipa = np.asarray(_from_components["W_r1_to_ipa"])
             self.W_l1_to_ipa = np.asarray(_from_components["W_l1_to_ipa"])
-            self.silence_handler = _from_components["silence_handler"]
+            self.silence_handler = SilenceHandler(
+                self.pv_ipa, threshold=self.hparams["silence_threshold"]
+            )
             return
 
         assert (
             train_df is not None
         ), "Segmenter requires train_df unless _from_components is given."
-        assert (
-            silence_detector_path is not None
-        ), "Segmenter requires silence_detector_path when fitting from a DataFrame."
-        self.silence_handler = SilenceHandler(silence_detector_path)
         self._fit_from_df(train_df)
+        self.silence_handler = SilenceHandler(
+            self.pv_ipa, threshold=self.hparams["silence_threshold"]
+        )
 
     def _fit_from_df(self, train_df):
         pv_train_df = train_df[~train_df.ipa.isna()]
@@ -520,7 +516,6 @@ class Segmenter:
     def fit(
         cls,
         train_df,
-        silence_handler,
         *,
         frame_shift,
         sr,
@@ -534,8 +529,10 @@ class Segmenter:
         seg.frame_shift = int(frame_shift)
         seg.sr = int(sr)
         seg.mel_frame_shift_ms = int(mel_frame_shift_ms)
-        seg.silence_handler = silence_handler
         seg._fit_from_df(train_df)
+        seg.silence_handler = SilenceHandler(
+            seg.pv_ipa, threshold=seg.hparams["silence_threshold"]
+        )
         return seg
 
     @classmethod
@@ -557,9 +554,6 @@ class Segmenter:
             ),
             "W_r1_to_ipa": artifact["regressors"]["W_r1_to_ipa"],
             "W_l1_to_ipa": artifact["regressors"]["W_l1_to_ipa"],
-            "silence_handler": SilenceHandler.from_state(
-                artifact["silence_detector"]
-            ),
         }
         return cls(
             frame_shift=net_spec["frame_shift"],
@@ -583,7 +577,6 @@ class Segmenter:
                 "W_r1_to_ipa": self.W_r1_to_ipa,
                 "W_l1_to_ipa": self.W_l1_to_ipa,
             },
-            "silence_detector": self.silence_handler.to_state(),
             "hparams": dict(self.hparams),
             "net": dict(net_spec),
             "tune_metrics": tune_metrics,
@@ -683,7 +676,7 @@ class Segmenter:
         preds = find_peaks(signal, prominence=prominence)[0]
         if snap_silence:
             silence_mask = self.silence_handler.predict_silence_mask(
-                net_feats
+                net_feats, threshold=h["silence_threshold"]
             )
             preds = self.silence_handler.handle_silence(
                 preds=preds,

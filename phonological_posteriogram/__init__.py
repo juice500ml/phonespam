@@ -1,5 +1,6 @@
 """Phone recognition and segmentation using phonological posteriograms."""
 
+from .evaluation import SegmentationEvaluator, SegmentationUnit
 from .model import PhonologicalVectors, Segmenter, SilenceHandler
 from .pretrained import PhonologicalPosteriogram
 
@@ -11,6 +12,8 @@ except ImportError:
 __all__ = [
     "PhonologicalPosteriogram",
     "PhonologicalVectors",
+    "SegmentationEvaluator",
+    "SegmentationUnit",
     "Segmenter",
     "SilenceHandler",
     "__version__",
