@@ -77,14 +77,16 @@ def test_silence_handler_uses_pv_ipa_speech_plus():
     handler = SilenceHandler(pv, threshold=0.5)
     assert handler.speech_plus_idx == 0
 
-    # 4 frames: silence | speech | speech | silence. The two speech frames
-    # each have a non-silent neighbor, so _fill_gaps leaves them alone.
+    # 4 frames: silence | speech | speech | silence. predict_silence_mask
+    # flags frames whose speech+ projection is *low* (i.e., anti-aligned
+    # with the +speech direction). The two speech frames each have a
+    # non-silent neighbor, so _fill_gaps leaves them alone.
     feats = np.array(
         [
-            [1.0, 0, 0, 0],
-            [-1.0, 0, 0, 0],
             [-1.0, 0, 0, 0],
             [1.0, 0, 0, 0],
+            [1.0, 0, 0, 0],
+            [-1.0, 0, 0, 0],
         ],
         dtype=np.float32,
     )
@@ -101,9 +103,12 @@ def test_silence_handler_threshold_override():
 
     handler = SilenceHandler(pv, threshold=0.5)
     feats = np.array([[1.0, 0, 0, 0]], dtype=np.float32)
-    # Weak alignment -> sigmoid output is ~0.525, between thresholds.
-    assert not handler.predict_silence_mask(feats, threshold=0.6)[0]
-    assert handler.predict_silence_mask(feats, threshold=0.5)[0]
+    # Weak alignment -> speech+ projection sigmoid ≈ 0.525, between
+    # thresholds. Silence is `speech+ < threshold`, so:
+    #   threshold=0.6 → 0.525 < 0.6 → silence (True)
+    #   threshold=0.5 → 0.525 < 0.5 → not silence (False)
+    assert handler.predict_silence_mask(feats, threshold=0.6)[0]
+    assert not handler.predict_silence_mask(feats, threshold=0.5)[0]
 
 
 def test_phonvectors_state_roundtrip():
@@ -466,3 +471,104 @@ def test_add_phone_context_adjacent_diphthongs():
     assert first["r_2"] == "ɪ"
     assert second["l_1"] == "ɪ"
     assert second["l_2"] == "e"
+
+
+def _make_synthetic_features_pkl(tmp_path):
+    """Build a tiny pkl that mimics extract_features.py's output.
+
+    Returns the path to the pkl. The dataset has two short utterances with
+    a small phone vocab + silence, enough rows for Segmenter.fit's
+    consecutive-pair regression to be non-empty.
+    """
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(0)
+    in_dim = 8
+
+    rows = []
+    for utt in ("u1.wav", "u2.wav"):
+        # Phone sequence with silence padding so "_" appears in the vocab.
+        seq = ["_", "p", "i", "t", "_"]
+        for i, ipa in enumerate(seq):
+            rows.append(
+                {
+                    "audio_path": utt,
+                    "min": i * 0.10,
+                    "max": (i + 1) * 0.10,
+                    "ipa": ipa,
+                    "l_1": seq[i - 1] if i > 0 else None,
+                    "r_1": seq[i + 1] if i < len(seq) - 1 else None,
+                    "feat": rng.normal(size=in_dim).astype(np.float32),
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    df.attrs["hf_repo"] = "microsoft/wavlm-large"
+    df.attrs["encoder_layer"] = -1
+    df.attrs["pool"] = "center"
+    df.attrs["sr"] = 16000
+    df.attrs["frame_shift"] = 320
+
+    pkl_path = tmp_path / "feats.pkl"
+    df.to_pickle(pkl_path)
+    return pkl_path
+
+
+def test_training_train_requires_features_attrs(tmp_path):
+    """Missing df.attrs keys produce a clear error, not an opaque crash."""
+    pd = pytest.importorskip("pandas")
+    train_mod = pytest.importorskip(
+        "phonological_posteriogram.training.train"
+    )
+
+    pkl_path = tmp_path / "bad.pkl"
+    pd.DataFrame({"ipa": ["a"], "feat": [np.zeros(4, dtype=np.float32)]}).to_pickle(
+        pkl_path
+    )
+
+    args = train_mod._get_args(
+        [
+            "--features_pkl", str(pkl_path),
+            "--output_dir", str(tmp_path / "out"),
+        ]
+    )
+    with pytest.raises(ValueError, match="df.attrs"):
+        train_mod.run(args)
+
+
+def test_training_train_end_to_end(tmp_path):
+    """Fit on a synthetic features pkl, save, and reload via from_pretrained."""
+    try:
+        import panphon  # noqa: F401
+    except (ImportError, TypeError) as e:
+        # panphon >=0.22 uses PEP 604 unions and needs Python 3.10+; on 3.9
+        # the import raises TypeError, not ImportError, so importorskip
+        # alone wouldn't catch it.
+        pytest.skip(f"panphon unavailable: {e}")
+    train_mod = pytest.importorskip(
+        "phonological_posteriogram.training.train"
+    )
+
+    pkl_path = _make_synthetic_features_pkl(tmp_path)
+    out_dir = tmp_path / "trained"
+
+    args = train_mod._get_args(
+        [
+            "--features_pkl", str(pkl_path),
+            "--output_dir", str(out_dir),
+        ]
+    )
+    out = train_mod.run(args)
+    assert out.exists()
+    assert out.parent == out_dir
+    assert out.name == "model.pt"
+
+    # Round-trip through HF-style loader without needing the actual SSL
+    # weights (encoder is lazy-loaded).
+    reloaded = PhonologicalPosteriogram.from_pretrained(out_dir)
+    assert reloaded.net_spec["hf_repo"] == "microsoft/wavlm-large"
+    assert reloaded.net_spec["sr"] == 16000
+    assert reloaded.net_spec["frame_shift"] == 320
+    assert reloaded.net_spec["mel_frame_shift_ms"] == 10
+    # The silence handler is constructed from pv_ipa.speech+, no extra
+    # state needed on disk.
+    assert reloaded.segmenter.silence_handler.speech_plus_idx >= 0

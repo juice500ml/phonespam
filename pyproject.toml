@@ -9,7 +9,7 @@ name = "phonological-posteriogram"
 dynamic = ["version"]
 description = "Phone recognition and segmentation using phonological posteriograms over SSL speech features."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Kwanghee Choi", email = "juice500ml@gmail.com"},
@@ -29,7 +29,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -93,7 +92,7 @@ addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

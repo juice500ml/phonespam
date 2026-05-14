@@ -69,7 +69,7 @@ def _get_args(argv=None):
     )
     parser.add_argument(
         "--pool",
-        default="average",
+        default="center",
         choices=POOL_CHOICES,
         help="Pooling method for each per-phone feature slice.",
     )
