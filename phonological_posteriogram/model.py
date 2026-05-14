@@ -41,7 +41,7 @@ class SilenceHandler:
     def predict_silence_mask(self, feats, threshold=None):
         thr = self.threshold if threshold is None else float(threshold)
         proj = self.pv_ipa.project(feats)
-        raw_silence_mask = proj[:, self.speech_plus_idx] > thr
+        raw_silence_mask = proj[:, self.speech_plus_idx] < thr
         return self._fill_gaps(raw_silence_mask)
 
     def handle_silence(self, preds, silence_mask, snap_tolerance=1):

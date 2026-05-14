@@ -324,6 +324,125 @@ def test_evaluator_demo_runs():
     evaluation._demo(["--forced"])
 
 
+def test_training_evaluate_helpers():
+    """_gt_units sorts by min; _pred_units pads with 0 and audio_duration."""
+    pd = pytest.importorskip("pandas")
+    ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
+
+    df = pd.DataFrame(
+        {
+            "audio_path": ["a.wav"] * 3,
+            "min": [0.2, 0.0, 0.1],
+            "max": [0.3, 0.1, 0.2],
+            "ipa": ["c", "a", "b"],
+        }
+    )
+    units = ev._gt_units(df)
+    assert [u.label for u in units] == ["a", "b", "c"]
+    assert [u.start for u in units] == [0.0, 0.1, 0.2]
+
+    pred_units = ev._pred_units(np.array([0.1, 0.2]), audio_duration=0.5)
+    assert len(pred_units) == 3
+    assert pred_units[0].start == 0.0 and pred_units[0].end == pytest.approx(0.1)
+    assert pred_units[-1].end == pytest.approx(0.5)
+
+
+def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
+    """Run training/evaluate.py against a stubbed model + tiny CSV.
+
+    Patches `PhonologicalPosteriogram.from_pretrained` and `librosa.load` so
+    no HF download or real audio is needed. Verifies the script produces a
+    sensible aggregated result.
+    """
+    pd = pytest.importorskip("pandas")
+    ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
+
+    csv_path = tmp_path / "fake.csv"
+    pd.DataFrame(
+        {
+            "audio_path": ["fake.wav"] * 3,
+            "min": [0.0, 0.10, 0.20],
+            "max": [0.10, 0.20, 0.30],
+            "ipa": ["a", "b", "c"],
+            "split": ["test"] * 3,
+        }
+    ).to_csv(csv_path, index=False)
+
+    class FakeModel:
+        net_spec = {"sr": 16000, "frame_shift": 320}
+
+        def segment_seconds(self, waveform, **_):
+            # Predict exactly the interior GT boundaries (perfect score).
+            return np.array([0.10, 0.20], dtype=float)
+
+    monkeypatch.setattr(
+        ev.PhonologicalPosteriogram, "from_pretrained",
+        classmethod(lambda cls, *a, **kw: FakeModel()),
+    )
+    monkeypatch.setattr(
+        ev.librosa,
+        "load",
+        lambda path, sr=None, mono=True: (
+            np.zeros(int(0.30 * sr), dtype=np.float32),
+            sr,
+        ),
+    )
+
+    args = ev._get_args(
+        [
+            "--model", "ignored",
+            "--dataset_csv", str(csv_path),
+            "--split", "test",
+        ]
+    )
+    results = ev.run(args)
+    assert results["f1"] == pytest.approx(1.0, abs=1e-5)
+    assert results["total_segments"] == 1
+
+
+def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
+    """A failing librosa.load is reported and the utterance is skipped, but
+    the script doesn't crash."""
+    pd = pytest.importorskip("pandas")
+    ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
+
+    csv_path = tmp_path / "fake.csv"
+    pd.DataFrame(
+        {
+            "audio_path": ["good.wav", "bad.wav"],
+            "min": [0.0, 0.0],
+            "max": [0.1, 0.1],
+            "ipa": ["a", "b"],
+            "split": ["test", "test"],
+        }
+    ).to_csv(csv_path, index=False)
+
+    class FakeModel:
+        net_spec = {"sr": 16000, "frame_shift": 320}
+
+        def segment_seconds(self, waveform, **_):
+            return np.array([0.05], dtype=float)
+
+    monkeypatch.setattr(
+        ev.PhonologicalPosteriogram, "from_pretrained",
+        classmethod(lambda cls, *a, **kw: FakeModel()),
+    )
+
+    def fake_load(path, sr=None, mono=True):
+        if "bad.wav" in str(path):
+            raise FileNotFoundError(path)
+        return np.zeros(int(0.10 * sr), dtype=np.float32), sr
+
+    monkeypatch.setattr(ev.librosa, "load", fake_load)
+
+    args = ev._get_args(
+        ["--model", "ignored", "--dataset_csv", str(csv_path)]
+    )
+    results = ev.run(args)
+    # Only the good utterance was evaluated.
+    assert results["total_segments"] == 1
+
+
 def test_add_phone_context_adjacent_diphthongs():
     """Two diphthongs back-to-back: each splits independently."""
     pd = pytest.importorskip("pandas")
