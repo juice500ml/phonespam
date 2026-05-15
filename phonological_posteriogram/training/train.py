@@ -69,16 +69,6 @@ def _get_args(argv=None):
             "features (silence = ipa == '_')."
         ),
     )
-    parser.add_argument(
-        "--silence_detector",
-        type=Path,
-        default=None,
-        help=(
-            "Optional override: load a pre-trained sklearn silence "
-            "detector from this joblib path instead of fitting one. Takes "
-            "precedence over --silence_backend."
-        ),
-    )
     args = parser.parse_args(argv)
     print(args)
     return args
@@ -101,7 +91,6 @@ def run(args):
         sr=int(attrs["sr"]),
         mel_frame_shift_ms=int(args.mel_frame_shift_ms),
         silence_backend=args.silence_backend,
-        silence_detector_path=args.silence_detector,
     )
 
     net_spec = {

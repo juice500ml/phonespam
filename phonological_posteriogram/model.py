@@ -24,7 +24,7 @@ class SilenceHandler:
 
     Pass exactly one of ``pv_ipa=`` or ``model=`` at construction time, or
     use one of the factory methods :meth:`from_speech_plus`,
-    :meth:`from_logreg_path`, :meth:`from_state`.
+    :meth:`fit_logreg`, :meth:`from_state`.
     """
 
     def __init__(self, *, pv_ipa=None, model=None, threshold=0.5):
@@ -49,18 +49,6 @@ class SilenceHandler:
     @classmethod
     def from_speech_plus(cls, pv_ipa, *, threshold=0.5):
         return cls(pv_ipa=pv_ipa, threshold=threshold)
-
-    @classmethod
-    def from_logreg_path(cls, detector_path, *, threshold=0.5):
-        """Load a pre-trained sklearn classifier from a ``.joblib`` file."""
-        try:
-            import joblib
-        except ImportError as e:
-            raise ImportError(
-                "Loading a joblib-saved silence detector requires joblib "
-                "(install scikit-learn or joblib directly)."
-            ) from e
-        return cls(model=joblib.load(detector_path), threshold=threshold)
 
     @classmethod
     def fit_logreg(
@@ -567,7 +555,6 @@ class Segmenter:
         sr,
         mel_frame_shift_ms,
         silence_backend="speech_plus",
-        silence_detector_path=None,
         _from_components=None,
         hparams=None,
     ):
@@ -592,27 +579,12 @@ class Segmenter:
         ), "Segmenter requires train_df unless _from_components is given."
         self._fit_from_df(train_df)
         self.silence_handler = self._build_silence_handler(
-            train_df=train_df,
-            backend=silence_backend,
-            detector_path=silence_detector_path,
+            train_df=train_df, backend=silence_backend
         )
 
-    def _build_silence_handler(
-        self, *, train_df, backend, detector_path
-    ):
-        """Construct the silence handler for one of the supported backends.
-
-        Precedence:
-          1. ``detector_path`` (load a pre-trained sklearn classifier)
-          2. ``backend == 'logreg'`` (fit a fresh LogisticRegression on
-             ``train_df``)
-          3. ``backend == 'speech_plus'`` (default: use pv_ipa.speech+)
-        """
+    def _build_silence_handler(self, *, train_df, backend):
+        """Construct the silence handler for the requested backend."""
         thr = self.hparams["silence_threshold"]
-        if detector_path is not None:
-            return SilenceHandler.from_logreg_path(
-                detector_path, threshold=thr
-            )
         if backend == "logreg":
             return SilenceHandler.fit_logreg(train_df, threshold=thr)
         if backend == "speech_plus":
@@ -667,7 +639,6 @@ class Segmenter:
         sr,
         mel_frame_shift_ms,
         silence_backend="speech_plus",
-        silence_detector_path=None,
         hparams=None,
     ):
         seg = cls.__new__(cls)
@@ -679,9 +650,7 @@ class Segmenter:
         seg.mel_frame_shift_ms = int(mel_frame_shift_ms)
         seg._fit_from_df(train_df)
         seg.silence_handler = seg._build_silence_handler(
-            train_df=train_df,
-            backend=silence_backend,
-            detector_path=silence_detector_path,
+            train_df=train_df, backend=silence_backend
         )
         return seg
 
