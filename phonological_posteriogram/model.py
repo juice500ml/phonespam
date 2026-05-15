@@ -11,25 +11,101 @@ warnings.filterwarnings(
 
 
 class SilenceHandler:
-    """Predicts silent frames from the ``speech+`` dimension of a fitted
-    :class:`PhonologicalVectors`.
+    """Predicts silent frames from one of two interchangeable backends:
 
-    ``speech+`` is the canonical phonological feature that is positive only
-    for the silence token ``"_"`` — projecting per-frame SSL features onto
-    ``pv_ipa`` therefore yields a per-frame silence probability at the
-    ``speech+`` index that we threshold to a binary mask. This replaces the
-    standalone scikit-learn classifier the original pipeline relied on.
+    - ``speech_plus`` (default): project features onto a fitted
+      :class:`PhonologicalVectors` and threshold the ``speech+`` dimension.
+      ``speech+`` is positive only for the silence token ``"_"`` in
+      :meth:`PhonologicalVectors.prep_featmap`, so a HIGH projection
+      identifies silence-like frames.
+    - ``logreg``: a separately-trained sklearn classifier (typically
+      ``LogisticRegression``). Matches the pipeline's original behavior;
+      use this when you have a pre-fit ``.joblib`` detector.
+
+    Pass exactly one of ``pv_ipa=`` or ``model=`` at construction time, or
+    use one of the factory methods :meth:`from_speech_plus`,
+    :meth:`from_logreg_path`, :meth:`from_state`.
     """
 
-    def __init__(self, pv_ipa, *, threshold=0.5):
-        if "speech+" not in pv_ipa.featnames:
+    def __init__(self, *, pv_ipa=None, model=None, threshold=0.5):
+        if (pv_ipa is None) == (model is None):
             raise ValueError(
-                "pv_ipa is missing the 'speech+' feature; the training "
-                "vocab must include the silence token '_'."
+                "Pass exactly one of pv_ipa= (speech+ backend) or model= "
+                "(sklearn classifier backend)."
             )
         self.pv_ipa = pv_ipa
+        self.model = model
         self.threshold = float(threshold)
-        self.speech_plus_idx = pv_ipa.featnames.index("speech+")
+        if pv_ipa is not None:
+            if "speech+" not in pv_ipa.featnames:
+                raise ValueError(
+                    "pv_ipa is missing the 'speech+' feature; the training "
+                    "vocab must include the silence token '_'."
+                )
+            self.speech_plus_idx = pv_ipa.featnames.index("speech+")
+        else:
+            self.speech_plus_idx = None
+
+    @classmethod
+    def from_speech_plus(cls, pv_ipa, *, threshold=0.5):
+        return cls(pv_ipa=pv_ipa, threshold=threshold)
+
+    @classmethod
+    def from_logreg_path(cls, detector_path, *, threshold=0.5):
+        """Load a pre-trained sklearn classifier from a ``.joblib`` file."""
+        try:
+            import joblib
+        except ImportError as e:
+            raise ImportError(
+                "Loading a joblib-saved silence detector requires joblib "
+                "(install scikit-learn or joblib directly)."
+            ) from e
+        return cls(model=joblib.load(detector_path), threshold=threshold)
+
+    @classmethod
+    def fit_logreg(
+        cls,
+        train_df,
+        *,
+        threshold=0.5,
+        silence_label="_",
+        **logreg_kwargs,
+    ):
+        """Fit a LogisticRegression silence detector on per-phone features.
+
+        Rows where ``ipa == silence_label`` (default ``"_"``) form the
+        positive class; everything else is the negative class. Rows with
+        missing features or labels are dropped. Extra kwargs are forwarded
+        to ``sklearn.linear_model.LogisticRegression``.
+        """
+        try:
+            from sklearn.linear_model import LogisticRegression
+        except ImportError as e:
+            raise ImportError(
+                "Fitting a LogisticRegression silence detector requires "
+                "scikit-learn (`pip install scikit-learn`)."
+            ) from e
+
+        df = train_df[~train_df.feat.isna() & ~train_df.ipa.isna()]
+        X = np.stack(df.feat.values)
+        y = (df.ipa.values == silence_label).astype(int)
+        n_pos = int(y.sum())
+        if n_pos == 0:
+            raise ValueError(
+                f"No silence rows (ipa == {silence_label!r}) in train_df — "
+                "ensure the dataset includes silence labels (e.g. TIMIT "
+                "pau/epi/h# mapped to '_')."
+            )
+        if n_pos == len(y):
+            raise ValueError(
+                "All training rows are silence — can't fit a logreg detector."
+            )
+        clf = LogisticRegression(**logreg_kwargs).fit(X, y)
+        return cls(model=clf, threshold=threshold)
+
+    @property
+    def backend(self):
+        return "speech_plus" if self.pv_ipa is not None else "logreg"
 
     def _fill_gaps(self, raw_mask):
         neighbors_silent = np.logical_and(
@@ -40,9 +116,50 @@ class SilenceHandler:
 
     def predict_silence_mask(self, feats, threshold=None):
         thr = self.threshold if threshold is None else float(threshold)
-        proj = self.pv_ipa.project(feats)
-        raw_silence_mask = proj[:, self.speech_plus_idx] < thr
+        if self.pv_ipa is not None:
+            proj = self.pv_ipa.project(feats)
+            raw_silence_mask = proj[:, self.speech_plus_idx] > thr
+        else:
+            # sklearn classifier: .predict() returns the class label (0/1
+            # or whatever classes_ holds). Cast to bool — non-zero ⇒ silence.
+            raw_silence_mask = self.model.predict(feats).astype(bool)
         return self._fill_gaps(raw_silence_mask)
+
+    def to_state(self):
+        """Serialize backend-specific state for round-tripping in artifacts."""
+        if self.model is None:
+            return {"backend": "speech_plus"}
+        return {
+            "backend": "logreg",
+            "_class_name": type(self.model).__name__,
+            "coef_": np.asarray(self.model.coef_),
+            "intercept_": np.asarray(self.model.intercept_),
+            "classes_": np.asarray(self.model.classes_),
+        }
+
+    @classmethod
+    def from_state(cls, state, *, pv_ipa=None, threshold=0.5):
+        backend = state.get("backend", "speech_plus")
+        if backend == "speech_plus":
+            if pv_ipa is None:
+                raise ValueError(
+                    "speech_plus backend requires pv_ipa= at load time."
+                )
+            return cls(pv_ipa=pv_ipa, threshold=threshold)
+        if backend != "logreg":
+            raise ValueError(f"Unknown silence backend: {backend!r}")
+        try:
+            from sklearn.linear_model import LogisticRegression
+        except ImportError as e:
+            raise ImportError(
+                "Loading a logistic-regression silence detector requires "
+                "scikit-learn (`pip install scikit-learn`)."
+            ) from e
+        clf = LogisticRegression()
+        clf.coef_ = np.asarray(state["coef_"])
+        clf.intercept_ = np.asarray(state["intercept_"])
+        clf.classes_ = np.asarray(state["classes_"])
+        return cls(model=clf, threshold=threshold)
 
     def handle_silence(self, preds, silence_mask, snap_tolerance=1):
         n_frames = len(silence_mask)
@@ -393,11 +510,11 @@ def _shift_signal(signal, shift_frames):
 
 class Segmenter:
     COMBINED_SIGNALS = (
-        "frame_delta",
-        "fwd_delta",
-        "bwd_delta",
-        "fwd_contrast",
-        "bwd_contrast",
+        # "frame_delta",
+        # "fwd_delta",
+        # "bwd_delta",
+        # "fwd_contrast",
+        # "bwd_contrast",
         "mel_svf",
     )
     COMBINED_SIGNAL_KWARGS = {
@@ -440,6 +557,8 @@ class Segmenter:
             "silence_threshold": 0.5,
         }
 
+    SILENCE_BACKENDS = ("speech_plus", "logreg")
+
     def __init__(
         self,
         train_df=None,
@@ -447,6 +566,8 @@ class Segmenter:
         frame_shift,
         sr,
         mel_frame_shift_ms,
+        silence_backend="speech_plus",
+        silence_detector_path=None,
         _from_components=None,
         hparams=None,
     ):
@@ -463,17 +584,42 @@ class Segmenter:
             self.pv_r1 = _from_components["pv_r1"]
             self.W_r1_to_ipa = np.asarray(_from_components["W_r1_to_ipa"])
             self.W_l1_to_ipa = np.asarray(_from_components["W_l1_to_ipa"])
-            self.silence_handler = SilenceHandler(
-                self.pv_ipa, threshold=self.hparams["silence_threshold"]
-            )
+            self.silence_handler = _from_components["silence_handler"]
             return
 
         assert (
             train_df is not None
         ), "Segmenter requires train_df unless _from_components is given."
         self._fit_from_df(train_df)
-        self.silence_handler = SilenceHandler(
-            self.pv_ipa, threshold=self.hparams["silence_threshold"]
+        self.silence_handler = self._build_silence_handler(
+            train_df=train_df,
+            backend=silence_backend,
+            detector_path=silence_detector_path,
+        )
+
+    def _build_silence_handler(
+        self, *, train_df, backend, detector_path
+    ):
+        """Construct the silence handler for one of the supported backends.
+
+        Precedence:
+          1. ``detector_path`` (load a pre-trained sklearn classifier)
+          2. ``backend == 'logreg'`` (fit a fresh LogisticRegression on
+             ``train_df``)
+          3. ``backend == 'speech_plus'`` (default: use pv_ipa.speech+)
+        """
+        thr = self.hparams["silence_threshold"]
+        if detector_path is not None:
+            return SilenceHandler.from_logreg_path(
+                detector_path, threshold=thr
+            )
+        if backend == "logreg":
+            return SilenceHandler.fit_logreg(train_df, threshold=thr)
+        if backend == "speech_plus":
+            return SilenceHandler.from_speech_plus(self.pv_ipa, threshold=thr)
+        raise ValueError(
+            f"Unknown silence_backend: {backend!r}. "
+            f"Choose one of {self.SILENCE_BACKENDS}."
         )
 
     def _fit_from_df(self, train_df):
@@ -520,6 +666,8 @@ class Segmenter:
         frame_shift,
         sr,
         mel_frame_shift_ms,
+        silence_backend="speech_plus",
+        silence_detector_path=None,
         hparams=None,
     ):
         seg = cls.__new__(cls)
@@ -530,8 +678,10 @@ class Segmenter:
         seg.sr = int(sr)
         seg.mel_frame_shift_ms = int(mel_frame_shift_ms)
         seg._fit_from_df(train_df)
-        seg.silence_handler = SilenceHandler(
-            seg.pv_ipa, threshold=seg.hparams["silence_threshold"]
+        seg.silence_handler = seg._build_silence_handler(
+            train_df=train_df,
+            backend=silence_backend,
+            detector_path=silence_detector_path,
         )
         return seg
 
@@ -542,10 +692,18 @@ class Segmenter:
             assert (
                 key in net_spec
             ), f"artifact['net'] missing required key '{key}'."
+        pv_ipa = PhonologicalVectors.from_state(artifact["phonvecs"]["ipa"])
+        threshold = artifact.get("hparams", {}).get(
+            "silence_threshold", cls.default_hparams()["silence_threshold"]
+        )
+        silence_state = artifact.get(
+            "silence_detector", {"backend": "speech_plus"}
+        )
+        silence_handler = SilenceHandler.from_state(
+            silence_state, pv_ipa=pv_ipa, threshold=threshold
+        )
         components = {
-            "pv_ipa": PhonologicalVectors.from_state(
-                artifact["phonvecs"]["ipa"]
-            ),
+            "pv_ipa": pv_ipa,
             "pv_l1": PhonologicalVectors.from_state(
                 artifact["phonvecs"]["l_1"]
             ),
@@ -554,6 +712,7 @@ class Segmenter:
             ),
             "W_r1_to_ipa": artifact["regressors"]["W_r1_to_ipa"],
             "W_l1_to_ipa": artifact["regressors"]["W_l1_to_ipa"],
+            "silence_handler": silence_handler,
         }
         return cls(
             frame_shift=net_spec["frame_shift"],
@@ -577,6 +736,7 @@ class Segmenter:
                 "W_r1_to_ipa": self.W_r1_to_ipa,
                 "W_l1_to_ipa": self.W_l1_to_ipa,
             },
+            "silence_detector": self.silence_handler.to_state(),
             "hparams": dict(self.hparams),
             "net": dict(net_spec),
             "tune_metrics": tune_metrics,

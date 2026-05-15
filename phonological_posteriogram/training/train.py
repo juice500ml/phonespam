@@ -58,6 +58,27 @@ def _get_args(argv=None):
             "segmentation time. Recorded in the artifact's net_spec."
         ),
     )
+    parser.add_argument(
+        "--silence_backend",
+        default="speech_plus",
+        choices=("speech_plus", "logreg"),
+        help=(
+            "How to build the silence detector. 'speech_plus' (default) uses "
+            "pv_ipa's 'speech+' projection — no extra training. 'logreg' "
+            "fits a scikit-learn LogisticRegression on the per-phone "
+            "features (silence = ipa == '_')."
+        ),
+    )
+    parser.add_argument(
+        "--silence_detector",
+        type=Path,
+        default=None,
+        help=(
+            "Optional override: load a pre-trained sklearn silence "
+            "detector from this joblib path instead of fitting one. Takes "
+            "precedence over --silence_backend."
+        ),
+    )
     args = parser.parse_args(argv)
     print(args)
     return args
@@ -79,6 +100,8 @@ def run(args):
         frame_shift=int(attrs["frame_shift"]),
         sr=int(attrs["sr"]),
         mel_frame_shift_ms=int(args.mel_frame_shift_ms),
+        silence_backend=args.silence_backend,
+        silence_detector_path=args.silence_detector,
     )
 
     net_spec = {

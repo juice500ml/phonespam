@@ -61,7 +61,7 @@ def test_silence_handler_requires_speech_plus():
         _make_phonvec_state(featnames=["a+", "b+", "c+"])
     )
     with pytest.raises(ValueError, match="speech\\+"):
-        SilenceHandler(pv_no_speech)
+        SilenceHandler(pv_ipa=pv_no_speech)
 
 
 def test_silence_handler_uses_pv_ipa_speech_plus():
@@ -74,24 +74,150 @@ def test_silence_handler_uses_pv_ipa_speech_plus():
     state["pos_vecs"][0] = np.array([10.0, 0, 0, 0], dtype=np.float32)
     pv = PhonologicalVectors.from_state(state)
 
-    handler = SilenceHandler(pv, threshold=0.5)
+    handler = SilenceHandler(pv_ipa=pv, threshold=0.5)
     assert handler.speech_plus_idx == 0
 
     # 4 frames: silence | speech | speech | silence. predict_silence_mask
-    # flags frames whose speech+ projection is *low* (i.e., anti-aligned
-    # with the +speech direction). The two speech frames each have a
-    # non-silent neighbor, so _fill_gaps leaves them alone.
+    # flags frames whose speech+ projection is HIGH — pos_phns = {"_"}
+    # in prep_featmap, so silence frames produce the high projection.
+    # The two speech frames each have a non-silent neighbor, so
+    # _fill_gaps leaves them alone.
     feats = np.array(
         [
-            [-1.0, 0, 0, 0],
-            [1.0, 0, 0, 0],
             [1.0, 0, 0, 0],
             [-1.0, 0, 0, 0],
+            [-1.0, 0, 0, 0],
+            [1.0, 0, 0, 0],
         ],
         dtype=np.float32,
     )
     mask = handler.predict_silence_mask(feats)
     assert mask.tolist() == [True, False, False, True]
+
+
+def test_silence_handler_logreg_backend(tmp_path):
+    """The opt-in LogisticRegression backend dispatches to model.predict."""
+    sklearn = pytest.importorskip("sklearn")  # noqa: F841
+    from sklearn.linear_model import LogisticRegression
+
+    clf = LogisticRegression()
+    # Hand-set state so we don't actually fit.
+    clf.coef_ = np.array([[10.0, 0.0]])
+    clf.intercept_ = np.array([-5.0])
+    clf.classes_ = np.array([0, 1])
+
+    handler = SilenceHandler(model=clf)
+    assert handler.backend == "logreg"
+
+    feats = np.array(
+        [
+            [1.0, 0.0],   # 10 - 5 = +5  → class 1 (silence)
+            [-1.0, 0.0],  # -10 - 5 = -15 → class 0 (speech)
+            [-1.0, 0.0],
+            [1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    mask = handler.predict_silence_mask(feats)
+    assert mask.tolist() == [True, False, False, True]
+
+
+def test_silence_handler_logreg_state_roundtrip():
+    """to_state / from_state round-trip preserves predictions."""
+    pytest.importorskip("sklearn")
+    from sklearn.linear_model import LogisticRegression
+
+    clf = LogisticRegression()
+    clf.coef_ = np.array([[10.0, 0.0]])
+    clf.intercept_ = np.array([-5.0])
+    clf.classes_ = np.array([0, 1])
+
+    handler = SilenceHandler(model=clf)
+    state = handler.to_state()
+    assert state["backend"] == "logreg"
+
+    reloaded = SilenceHandler.from_state(state)
+    feats = np.array([[1.0, 0.0], [-1.0, 0.0]], dtype=np.float32)
+    np.testing.assert_array_equal(
+        handler.predict_silence_mask(feats),
+        reloaded.predict_silence_mask(feats),
+    )
+
+
+def test_silence_handler_init_requires_exactly_one_backend():
+    pv = PhonologicalVectors.from_state(_make_phonvec_state())
+    with pytest.raises(ValueError, match="Pass exactly one"):
+        SilenceHandler()
+    with pytest.raises(ValueError, match="Pass exactly one"):
+        SilenceHandler(pv_ipa=pv, model=object())
+
+
+def test_silence_handler_fit_logreg_from_dataframe():
+    """fit_logreg trains a sklearn classifier on per-phone (feat, ipa) rows."""
+    pytest.importorskip("sklearn")
+    pd = pytest.importorskip("pandas")
+
+    rng = np.random.default_rng(0)
+    in_dim = 4
+    # Linearly separable synthetic data: silence frames live near +e_0,
+    # speech frames near -e_0 with some noise.
+    silence_feats = rng.normal(loc=[5, 0, 0, 0], scale=0.3, size=(50, in_dim))
+    speech_feats = rng.normal(loc=[-5, 0, 0, 0], scale=0.3, size=(50, in_dim))
+    df = pd.DataFrame(
+        {
+            "ipa": ["_"] * 50 + ["a"] * 25 + ["b"] * 25,
+            "feat": [r for r in silence_feats]
+            + [r for r in speech_feats[:25]]
+            + [r for r in speech_feats[25:]],
+        }
+    )
+
+    handler = SilenceHandler.fit_logreg(df)
+    assert handler.backend == "logreg"
+
+    test_silence = np.array([[5.0, 0, 0, 0]])
+    test_speech = np.array([[-5.0, 0, 0, 0]])
+    assert handler.predict_silence_mask(test_silence)[0]
+    assert not handler.predict_silence_mask(test_speech)[0]
+
+
+def test_silence_handler_fit_logreg_rejects_no_silence_rows():
+    pytest.importorskip("sklearn")
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame(
+        {
+            "ipa": ["a", "b", "a"],
+            "feat": [np.zeros(4, dtype=np.float32) for _ in range(3)],
+        }
+    )
+    with pytest.raises(ValueError, match="No silence rows"):
+        SilenceHandler.fit_logreg(df)
+
+
+def test_segmenter_fit_with_logreg_backend(tmp_path):
+    """End-to-end: Segmenter.fit(silence_backend='logreg') trains both pv_ipa
+    and a fresh sklearn classifier from the same train_df."""
+    try:
+        import panphon  # noqa: F401
+    except (ImportError, TypeError) as e:
+        pytest.skip(f"panphon unavailable: {e}")
+    pytest.importorskip("sklearn")
+    train_mod = pytest.importorskip(
+        "phonological_posteriogram.training.train"
+    )
+
+    pkl_path = _make_synthetic_features_pkl(tmp_path)
+    out_dir = tmp_path / "trained"
+    args = train_mod._get_args(
+        [
+            "--features_pkl", str(pkl_path),
+            "--output_dir", str(out_dir),
+            "--silence_backend", "logreg",
+        ]
+    )
+    train_mod.run(args)
+    reloaded = PhonologicalPosteriogram.from_pretrained(out_dir)
+    assert reloaded.segmenter.silence_handler.backend == "logreg"
 
 
 def test_silence_handler_threshold_override():
@@ -101,14 +227,14 @@ def test_silence_handler_threshold_override():
     state["pos_vecs"][0] = np.array([0.1, 0, 0, 0], dtype=np.float32)
     pv = PhonologicalVectors.from_state(state)
 
-    handler = SilenceHandler(pv, threshold=0.5)
+    handler = SilenceHandler(pv_ipa=pv, threshold=0.5)
     feats = np.array([[1.0, 0, 0, 0]], dtype=np.float32)
     # Weak alignment -> speech+ projection sigmoid ≈ 0.525, between
-    # thresholds. Silence is `speech+ < threshold`, so:
-    #   threshold=0.6 → 0.525 < 0.6 → silence (True)
-    #   threshold=0.5 → 0.525 < 0.5 → not silence (False)
-    assert handler.predict_silence_mask(feats, threshold=0.6)[0]
-    assert not handler.predict_silence_mask(feats, threshold=0.5)[0]
+    # thresholds. Silence is `speech+ > threshold`, so:
+    #   threshold=0.5 → 0.525 > 0.5 → silence (True)
+    #   threshold=0.6 → 0.525 > 0.6 → not silence (False)
+    assert handler.predict_silence_mask(feats, threshold=0.5)[0]
+    assert not handler.predict_silence_mask(feats, threshold=0.6)[0]
 
 
 def test_phonvectors_state_roundtrip():
@@ -123,6 +249,35 @@ def test_segmenter_from_artifact():
     seg = Segmenter.from_artifact(artifact)
     assert seg.frame_shift == 320
     assert seg.sr == 16000
+    # Default backend is speech_plus when artifact lacks silence_detector.
+    assert seg.silence_handler.backend == "speech_plus"
+
+
+def test_segmenter_artifact_roundtrip_logreg_backend(tmp_path):
+    """to_artifact + from_artifact preserves a logreg silence detector."""
+    pytest.importorskip("sklearn")
+    from sklearn.linear_model import LogisticRegression
+
+    artifact = _make_artifact()
+    seg = Segmenter.from_artifact(artifact)
+    # Swap in a logreg-backed handler.
+    clf = LogisticRegression()
+    clf.coef_ = np.array([[1.0, 0.0, 0.0, 0.0]])
+    clf.intercept_ = np.array([0.0])
+    clf.classes_ = np.array([0, 1])
+    seg.silence_handler = SilenceHandler(model=clf)
+
+    net_spec = artifact["net"]
+    new_artifact = seg.to_artifact(net_spec=net_spec)
+    assert new_artifact["silence_detector"]["backend"] == "logreg"
+
+    reloaded = Segmenter.from_artifact(new_artifact)
+    assert reloaded.silence_handler.backend == "logreg"
+    feats = np.array([[1.0, 0, 0, 0], [-1.0, 0, 0, 0]], dtype=np.float32)
+    np.testing.assert_array_equal(
+        seg.silence_handler.predict_silence_mask(feats),
+        reloaded.silence_handler.predict_silence_mask(feats),
+    )
 
 
 def test_pretrained_save_and_load_roundtrip(tmp_path: Path):

@@ -141,6 +141,7 @@ def run(args):
     df.attrs["sr"] = args.sr
     df.attrs["frame_shift"] = SSL_FRAME_SHIFT
 
+    args.output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_pickle(args.output_path)
 
 

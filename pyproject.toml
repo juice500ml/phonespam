@@ -53,13 +53,15 @@ dependencies = [
 [project.optional-dependencies]
 # Adds dataset preparation + SSL feature dumping used during training.
 # The training pipeline is just: run SSL inference, dump features, fit on
-# them (similar in spirit to k-means on SSL features), so the only extra
-# deps are dataset/labeling utilities and panphon for IPA featuralization.
-# (The silence detector is now derived from pv_ipa's "speech+" projection,
-#  so we no longer need a separate scikit-learn classifier.)
+# them (similar in spirit to k-means on SSL features), so the extra deps
+# are dataset/labeling utilities and panphon for IPA featuralization.
+# scikit-learn is needed when training (or loading) the optional
+# LogisticRegression silence detector backend; the default speech+
+# backend doesn't use it.
 train = [
     "praatio>=6.0",
     "panphon>=0.20",
+    "scikit-learn>=1.1",
     "tqdm>=4.64",
 ]
 dev = [

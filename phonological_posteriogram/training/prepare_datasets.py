@@ -71,7 +71,7 @@ def _get_args(argv=None):
     parser.add_argument(
         "--dataset_type", type=str, choices=["timit", "voxangeles"]
     )
-    parser.add_argument("--output_path", type=Path, help="Output csv folder")
+    parser.add_argument("--output_dir", type=Path, help="Output csv folder")
     return parser.parse_args(argv)
 
 
@@ -206,7 +206,7 @@ def run(args):
     }[args.dataset_type]
     df = prep(args.dataset_path)
 
-    os.makedirs(args.output_path, exist_ok=True)
+    args.output_path.mkdir(parents=True, exist_ok=True)
     csv_path = args.output_path / f"{args.dataset_type}.csv"
     df.to_csv(str(csv_path), index=False)
     print("Stored to", csv_path)
