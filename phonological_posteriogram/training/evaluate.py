@@ -27,7 +27,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from ..evaluation import SegmentationEvaluator, SegmentationUnit
-from ..pretrained import PhonologicalPosteriogram
+from ..phone_model import PhoneModel
 
 
 def _get_args(argv=None):
@@ -117,7 +117,7 @@ def _pred_units(boundary_times, audio_duration):
 
 
 def run(args):
-    model = PhonologicalPosteriogram.from_pretrained(args.model, device=args.device)
+    model = PhoneModel.from_pretrained(args.model, device=args.device)
     sr = model.net_spec["sr"]
 
     df = pd.read_csv(args.dataset_csv)

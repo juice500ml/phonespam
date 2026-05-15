@@ -1,87 +1,88 @@
 """Smoke tests that don't require any model downloads or audio files."""
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
 
 import phonological_posteriogram as pp
-from phonological_posteriogram.model import (
-    PhonologicalVectors,
-    Segmenter,
-    SilenceHandler,
-)
-from phonological_posteriogram.pretrained import PhonologicalPosteriogram
+from phonological_posteriogram.phone_model import PhoneModel
+from phonological_posteriogram.posteriogram import PhonologicalPosteriogram
+from phonological_posteriogram.segmenter import Segmenter
+
+NET_SPEC = {
+    "hf_repo": "microsoft/wavlm-large",
+    "encoder_layer": -1,
+    "frame_shift": 320,
+    "sr": 16000,
+}
 
 
 def test_public_api_exposed():
+    assert pp.PhoneModel is PhoneModel
     assert pp.PhonologicalPosteriogram is PhonologicalPosteriogram
     assert pp.Segmenter is Segmenter
     assert hasattr(pp, "__version__")
 
 
-def _make_phonvec_state(in_dim=4, n_feat=3, featnames=None):
+def _make_view_state(in_dim=4, n_feat=3, featnames=None, pos_vecs=None):
+    """State dict for one PhonologicalPosteriogram view."""
     if featnames is None:
         featnames = ["speech+"] + [f"f{i}" for i in range(n_feat - 1)]
+    if pos_vecs is None:
+        pos_vecs = np.zeros((n_feat, in_dim), dtype=np.float32)
     return {
         "featnames": featnames,
         "featmap": {"_": [1, 0, 0], "a": [0, 1, 0], "b": [0, 0, 1]},
-        "pos_vecs": np.zeros((n_feat, in_dim), dtype=np.float32),
+        "pos_vecs": np.asarray(pos_vecs, dtype=np.float32),
         "zero_vecs": np.zeros((n_feat, in_dim), dtype=np.float32),
         "scales": np.ones((n_feat,), dtype=np.float32),
         "biases": np.zeros((n_feat,), dtype=np.float32),
     }
 
 
-def _make_artifact(in_dim=4, n_feat=3):
+def _make_posteriogram_state(in_dim=4, n_feat=3, ipa_featnames=None,
+                             ipa_pos_vecs=None):
     return {
-        "phonvecs": {
-            "ipa": _make_phonvec_state(in_dim, n_feat),
-            "l_1": _make_phonvec_state(in_dim, n_feat),
-            "r_1": _make_phonvec_state(in_dim, n_feat),
+        "views": {
+            "ipa": _make_view_state(in_dim, n_feat, ipa_featnames, ipa_pos_vecs),
+            "l_1": _make_view_state(in_dim, n_feat),
+            "r_1": _make_view_state(in_dim, n_feat),
         },
-        "regressors": {
-            "W_r1_to_ipa": np.eye(n_feat, dtype=np.float32),
-            "W_l1_to_ipa": np.eye(n_feat, dtype=np.float32),
-        },
-        "hparams": Segmenter.default_hparams(),
-        "net": {
-            "hf_repo": "microsoft/wavlm-large",
-            "encoder_layer": -1,
-            "frame_shift": 320,
-            "sr": 16000,
-            "mel_frame_shift_ms": 10,
-        },
+        "W_r1_to_ipa": np.eye(n_feat, dtype=np.float32),
+        "W_l1_to_ipa": np.eye(n_feat, dtype=np.float32),
     }
 
 
-def test_silence_handler_requires_speech_plus():
-    pv_no_speech = PhonologicalVectors.from_state(
-        _make_phonvec_state(featnames=["a+", "b+", "c+"])
-    )
+def _make_posteriogram(**kw):
+    return PhonologicalPosteriogram.from_state(_make_posteriogram_state(**kw))
+
+
+def _make_artifact(in_dim=4, n_feat=3):
+    return {
+        "posteriogram": _make_posteriogram_state(in_dim, n_feat),
+        "hparams": Segmenter.default_hparams(),
+        "net": dict(NET_SPEC),
+    }
+
+
+def test_predict_silence_mask_requires_speech_plus():
+    post = _make_posteriogram(ipa_featnames=["a+", "b+", "c+"])
+    feats = np.zeros((2, 4), dtype=np.float32)
     with pytest.raises(ValueError, match="speech\\+"):
-        SilenceHandler(pv_ipa=pv_no_speech)
+        post.predict_silence_mask(feats)
 
 
-def test_silence_handler_uses_pv_ipa_speech_plus():
-    """Silence handler thresholds the speech+ dim of pv_ipa.project(feats)."""
+def test_predict_silence_mask_uses_speech_plus():
+    """predict_silence_mask thresholds the speech+ posteriogram channel."""
     in_dim = 4
-    state = _make_phonvec_state(in_dim=in_dim)
     # Make speech+ unmistakable: pos_vec is a strong direction; everything
     # else is zero. Then a feat aligned with speech+ projects to ~1 there.
-    state["pos_vecs"] = np.zeros((3, in_dim), dtype=np.float32)
-    state["pos_vecs"][0] = np.array([10.0, 0, 0, 0], dtype=np.float32)
-    pv = PhonologicalVectors.from_state(state)
+    pos = np.zeros((3, in_dim), dtype=np.float32)
+    pos[0] = np.array([10.0, 0, 0, 0], dtype=np.float32)
+    post = _make_posteriogram(in_dim=in_dim, ipa_pos_vecs=pos)
 
-    handler = SilenceHandler(pv_ipa=pv, threshold=0.5)
-    assert handler.speech_plus_idx == 0
-
-    # 4 frames: silence | speech | speech | silence. predict_silence_mask
-    # flags frames whose speech+ projection is HIGH — pos_phns = {"_"}
-    # in prep_featmap, so silence frames produce the high projection.
-    # The two speech frames each have a non-silent neighbor, so
-    # _fill_gaps leaves them alone.
+    # 4 frames: silence | speech | speech | silence. The two speech frames
+    # each have a non-silent neighbor, so the gap-fill leaves them alone.
     feats = np.array(
         [
             [1.0, 0, 0, 0],
@@ -91,224 +92,109 @@ def test_silence_handler_uses_pv_ipa_speech_plus():
         ],
         dtype=np.float32,
     )
-    mask = handler.predict_silence_mask(feats)
+    mask = post.predict_silence_mask(feats)
     assert mask.tolist() == [True, False, False, True]
 
 
-def test_silence_handler_logreg_backend(tmp_path):
-    """The opt-in LogisticRegression backend dispatches to model.predict."""
-    sklearn = pytest.importorskip("sklearn")  # noqa: F841
-    from sklearn.linear_model import LogisticRegression
-
-    clf = LogisticRegression()
-    # Hand-set state so we don't actually fit.
-    clf.coef_ = np.array([[10.0, 0.0]])
-    clf.intercept_ = np.array([-5.0])
-    clf.classes_ = np.array([0, 1])
-
-    handler = SilenceHandler(model=clf)
-    assert handler.backend == "logreg"
-
-    feats = np.array(
-        [
-            [1.0, 0.0],   # 10 - 5 = +5  → class 1 (silence)
-            [-1.0, 0.0],  # -10 - 5 = -15 → class 0 (speech)
-            [-1.0, 0.0],
-            [1.0, 0.0],
-        ],
-        dtype=np.float32,
-    )
-    mask = handler.predict_silence_mask(feats)
-    assert mask.tolist() == [True, False, False, True]
-
-
-def test_silence_handler_logreg_state_roundtrip():
-    """to_state / from_state round-trip preserves predictions."""
-    pytest.importorskip("sklearn")
-    from sklearn.linear_model import LogisticRegression
-
-    clf = LogisticRegression()
-    clf.coef_ = np.array([[10.0, 0.0]])
-    clf.intercept_ = np.array([-5.0])
-    clf.classes_ = np.array([0, 1])
-
-    handler = SilenceHandler(model=clf)
-    state = handler.to_state()
-    assert state["backend"] == "logreg"
-
-    reloaded = SilenceHandler.from_state(state)
-    feats = np.array([[1.0, 0.0], [-1.0, 0.0]], dtype=np.float32)
-    np.testing.assert_array_equal(
-        handler.predict_silence_mask(feats),
-        reloaded.predict_silence_mask(feats),
-    )
-
-
-def test_silence_handler_init_requires_exactly_one_backend():
-    pv = PhonologicalVectors.from_state(_make_phonvec_state())
-    with pytest.raises(ValueError, match="Pass exactly one"):
-        SilenceHandler()
-    with pytest.raises(ValueError, match="Pass exactly one"):
-        SilenceHandler(pv_ipa=pv, model=object())
-
-
-def test_silence_handler_fit_logreg_from_dataframe():
-    """fit_logreg trains a sklearn classifier on per-phone (feat, ipa) rows."""
-    pytest.importorskip("sklearn")
-    pd = pytest.importorskip("pandas")
-
-    rng = np.random.default_rng(0)
+def test_predict_silence_mask_threshold():
     in_dim = 4
-    # Linearly separable synthetic data: silence frames live near +e_0,
-    # speech frames near -e_0 with some noise.
-    silence_feats = rng.normal(loc=[5, 0, 0, 0], scale=0.3, size=(50, in_dim))
-    speech_feats = rng.normal(loc=[-5, 0, 0, 0], scale=0.3, size=(50, in_dim))
-    df = pd.DataFrame(
-        {
-            "ipa": ["_"] * 50 + ["a"] * 25 + ["b"] * 25,
-            "feat": [r for r in silence_feats]
-            + [r for r in speech_feats[:25]]
-            + [r for r in speech_feats[25:]],
-        }
-    )
+    pos = np.zeros((3, in_dim), dtype=np.float32)
+    pos[0] = np.array([0.1, 0, 0, 0], dtype=np.float32)
+    post = _make_posteriogram(in_dim=in_dim, ipa_pos_vecs=pos)
 
-    handler = SilenceHandler.fit_logreg(df)
-    assert handler.backend == "logreg"
-
-    test_silence = np.array([[5.0, 0, 0, 0]])
-    test_speech = np.array([[-5.0, 0, 0, 0]])
-    assert handler.predict_silence_mask(test_silence)[0]
-    assert not handler.predict_silence_mask(test_speech)[0]
-
-
-def test_silence_handler_fit_logreg_rejects_no_silence_rows():
-    pytest.importorskip("sklearn")
-    pd = pytest.importorskip("pandas")
-    df = pd.DataFrame(
-        {
-            "ipa": ["a", "b", "a"],
-            "feat": [np.zeros(4, dtype=np.float32) for _ in range(3)],
-        }
-    )
-    with pytest.raises(ValueError, match="No silence rows"):
-        SilenceHandler.fit_logreg(df)
-
-
-def test_segmenter_fit_with_logreg_backend(tmp_path):
-    """End-to-end: Segmenter.fit(silence_backend='logreg') trains both pv_ipa
-    and a fresh sklearn classifier from the same train_df."""
-    try:
-        import panphon  # noqa: F401
-    except (ImportError, TypeError) as e:
-        pytest.skip(f"panphon unavailable: {e}")
-    pytest.importorskip("sklearn")
-    train_mod = pytest.importorskip(
-        "phonological_posteriogram.training.train"
-    )
-
-    pkl_path = _make_synthetic_features_pkl(tmp_path)
-    out_dir = tmp_path / "trained"
-    args = train_mod._get_args(
-        [
-            "--features_pkl", str(pkl_path),
-            "--output_dir", str(out_dir),
-            "--silence_backend", "logreg",
-        ]
-    )
-    train_mod.run(args)
-    reloaded = PhonologicalPosteriogram.from_pretrained(out_dir)
-    assert reloaded.segmenter.silence_handler.backend == "logreg"
-
-
-def test_silence_handler_threshold_override():
-    in_dim = 4
-    state = _make_phonvec_state(in_dim=in_dim)
-    state["pos_vecs"] = np.zeros((3, in_dim), dtype=np.float32)
-    state["pos_vecs"][0] = np.array([0.1, 0, 0, 0], dtype=np.float32)
-    pv = PhonologicalVectors.from_state(state)
-
-    handler = SilenceHandler(pv_ipa=pv, threshold=0.5)
     feats = np.array([[1.0, 0, 0, 0]], dtype=np.float32)
     # Weak alignment -> speech+ projection sigmoid ≈ 0.525, between
     # thresholds. Silence is `speech+ > threshold`, so:
     #   threshold=0.5 → 0.525 > 0.5 → silence (True)
     #   threshold=0.6 → 0.525 > 0.6 → not silence (False)
-    assert handler.predict_silence_mask(feats, threshold=0.5)[0]
-    assert not handler.predict_silence_mask(feats, threshold=0.6)[0]
+    assert post.predict_silence_mask(feats, threshold=0.5)[0]
+    assert not post.predict_silence_mask(feats, threshold=0.6)[0]
 
 
-def test_phonvectors_state_roundtrip():
-    state = _make_phonvec_state()
-    pv = PhonologicalVectors.from_state(state)
-    assert pv.featnames == state["featnames"]
-    assert pv.pos_vecs.shape == state["pos_vecs"].shape
+def test_posteriogram_state_roundtrip():
+    post = _make_posteriogram()
+    reloaded = PhonologicalPosteriogram.from_state(post.to_state())
+    assert reloaded.featnames == post.featnames
+    assert set(reloaded.views) == {"ipa", "l_1", "r_1"}
+    np.testing.assert_array_equal(reloaded.W_r1_to_ipa, post.W_r1_to_ipa)
+    np.testing.assert_array_equal(reloaded.W_l1_to_ipa, post.W_l1_to_ipa)
 
 
-def test_segmenter_from_artifact():
-    artifact = _make_artifact()
-    seg = Segmenter.from_artifact(artifact)
+def test_segmenter_construction():
+    post = _make_posteriogram()
+    seg = Segmenter(post, sr=16000, frame_shift=320)
     assert seg.frame_shift == 320
     assert seg.sr == 16000
-    # Default backend is speech_plus when artifact lacks silence_detector.
-    assert seg.silence_handler.backend == "speech_plus"
+    assert seg.posteriogram is post
 
 
-def test_segmenter_artifact_roundtrip_logreg_backend(tmp_path):
-    """to_artifact + from_artifact preserves a logreg silence detector."""
-    pytest.importorskip("sklearn")
-    from sklearn.linear_model import LogisticRegression
-
+def test_phone_model_save_and_load_roundtrip(tmp_path):
     artifact = _make_artifact()
-    seg = Segmenter.from_artifact(artifact)
-    # Swap in a logreg-backed handler.
-    clf = LogisticRegression()
-    clf.coef_ = np.array([[1.0, 0.0, 0.0, 0.0]])
-    clf.intercept_ = np.array([0.0])
-    clf.classes_ = np.array([0, 1])
-    seg.silence_handler = SilenceHandler(model=clf)
+    torch.save(artifact, tmp_path / "model.pt")
 
-    net_spec = artifact["net"]
-    new_artifact = seg.to_artifact(net_spec=net_spec)
-    assert new_artifact["silence_detector"]["backend"] == "logreg"
-
-    reloaded = Segmenter.from_artifact(new_artifact)
-    assert reloaded.silence_handler.backend == "logreg"
-    feats = np.array([[1.0, 0, 0, 0], [-1.0, 0, 0, 0]], dtype=np.float32)
-    np.testing.assert_array_equal(
-        seg.silence_handler.predict_silence_mask(feats),
-        reloaded.silence_handler.predict_silence_mask(feats),
-    )
-
-
-def test_pretrained_save_and_load_roundtrip(tmp_path: Path):
-    artifact = _make_artifact()
-    artifact_path = tmp_path / "model.pt"
-    torch.save(artifact, artifact_path)
-
-    model = PhonologicalPosteriogram.from_pretrained(tmp_path)
+    model = PhoneModel.from_pretrained(tmp_path)
     assert model.net_spec["sr"] == 16000
     assert model.net_spec["hf_repo"] == "microsoft/wavlm-large"
 
     out_dir = tmp_path / "saved"
     out = model.save_pretrained(out_dir)
     assert out.exists()
-    reloaded = PhonologicalPosteriogram.from_pretrained(out_dir)
+    reloaded = PhoneModel.from_pretrained(out_dir)
     assert reloaded.net_spec == model.net_spec
+    # Posteriogram weights survive the round-trip.
+    np.testing.assert_array_equal(
+        reloaded.posteriogram.W_r1_to_ipa, model.posteriogram.W_r1_to_ipa
+    )
 
 
-def test_from_pretrained_accepts_file_path(tmp_path: Path):
+def test_from_pretrained_accepts_file_path(tmp_path):
     artifact = _make_artifact()
-    artifact_path = tmp_path / "custom.pt"
-    torch.save(artifact, artifact_path)
-    model = PhonologicalPosteriogram.from_pretrained(artifact_path)
-    assert model.segmenter.frame_shift == 320
+    torch.save(artifact, tmp_path / "custom.pt")
+    model = PhoneModel.from_pretrained(tmp_path / "custom.pt")
+    assert model.segmenter().frame_shift == 320
+
+
+def test_phone_model_segmenter_hparam_override():
+    """The point of the refactor: building a Segmenter with different
+    hparams is cheap and shares the (expensive) posteriogram weights."""
+    model = PhoneModel(_make_posteriogram(), net_spec=dict(NET_SPEC))
+    seg_a = model.segmenter()
+    seg_b = model.segmenter({"drop_k": 0})
+
+    assert seg_a.posteriogram is seg_b.posteriogram  # weights not copied
+    assert seg_b.hparams["drop_k"] == 0
+    assert seg_a.hparams["drop_k"] == Segmenter.default_hparams()["drop_k"]
 
 
 def test_segmenter_default_hparams_self_consistent():
     h = Segmenter.default_hparams()
-    for name in h["combined_signals"]:
-        assert name in h["signal_kwargs"]
-        assert name in h["signal_shifts"]
+    for spec in h["combined_signals"]:
+        assert set(spec) == {"name", "kwargs", "shift"}
+    assert set(h["single_signal"]) == {"name", "kwargs", "shift"}
+    assert "mel_frame_shift_ms" in h
+
+
+def test_segmenter_combines_duplicate_signal_specs():
+    """combined_signals is a list of specs, so the same signal type may
+    appear twice with different kwargs."""
+    post = _make_posteriogram(in_dim=4, n_feat=3)
+    seg = Segmenter(
+        post,
+        sr=16000,
+        frame_shift=320,
+        hparams={
+            **Segmenter.default_hparams(),
+            "combined_signals": [
+                {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 0},
+                {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 0},
+            ],
+            "drop_k": 0,
+            "snap_silence": False,
+        },
+    )
+    feats = np.random.default_rng(0).normal(size=(30, 4)).astype(np.float32)
+    preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
+    assert isinstance(preds, np.ndarray)
 
 
 def test_add_phone_context_splits_diphthongs():
@@ -510,8 +396,8 @@ def test_training_evaluate_helpers():
 def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
     """Run training/evaluate.py against a stubbed model + tiny CSV.
 
-    Patches `PhonologicalPosteriogram.from_pretrained` and `librosa.load` so
-    no HF download or real audio is needed. Verifies the script produces a
+    Patches `PhoneModel.from_pretrained` and `librosa.load` so no HF
+    download or real audio is needed. Verifies the script produces a
     sensible aggregated result.
     """
     pd = pytest.importorskip("pandas")
@@ -536,7 +422,7 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
             return np.array([0.10, 0.20], dtype=float)
 
     monkeypatch.setattr(
-        ev.PhonologicalPosteriogram, "from_pretrained",
+        ev.PhoneModel, "from_pretrained",
         classmethod(lambda cls, *a, **kw: FakeModel()),
     )
     monkeypatch.setattr(
@@ -584,7 +470,7 @@ def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
             return np.array([0.05], dtype=float)
 
     monkeypatch.setattr(
-        ev.PhonologicalPosteriogram, "from_pretrained",
+        ev.PhoneModel, "from_pretrained",
         classmethod(lambda cls, *a, **kw: FakeModel()),
     )
 
@@ -719,11 +605,83 @@ def test_training_train_end_to_end(tmp_path):
 
     # Round-trip through HF-style loader without needing the actual SSL
     # weights (encoder is lazy-loaded).
-    reloaded = PhonologicalPosteriogram.from_pretrained(out_dir)
+    reloaded = PhoneModel.from_pretrained(out_dir)
     assert reloaded.net_spec["hf_repo"] == "microsoft/wavlm-large"
     assert reloaded.net_spec["sr"] == 16000
     assert reloaded.net_spec["frame_shift"] == 320
-    assert reloaded.net_spec["mel_frame_shift_ms"] == 10
-    # The silence handler is constructed from pv_ipa.speech+, no extra
-    # state needed on disk.
-    assert reloaded.segmenter.silence_handler.speech_plus_idx >= 0
+    # mel_frame_shift_ms now lives in the algorithm hparams, not net_spec.
+    assert reloaded.hparams["mel_frame_shift_ms"] == 10
+    # Silence detection lives on the posteriogram (speech+ channel); the
+    # fitted vocab includes "_", so the feature is present.
+    assert "speech+" in reloaded.posteriogram.featnames
+
+
+def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
+    """tune.py encodes each utterance once, then sweeps the hparam list over
+    the cached features (no re-encoding per candidate)."""
+    import json
+
+    pd = pytest.importorskip("pandas")
+    tune = pytest.importorskip("phonological_posteriogram.training.tune")
+
+    csv_path = tmp_path / "d.csv"
+    pd.DataFrame(
+        {
+            "audio_path": ["a.wav", "b.wav"],
+            "min": [0.0, 0.0],
+            "max": [0.1, 0.1],
+            "ipa": ["a", "b"],
+            "split": ["test", "test"],
+        }
+    ).to_csv(csv_path, index=False)
+
+    # Three candidate hparam overrides to sweep.
+    grid_path = tmp_path / "grid.json"
+    grid_path.write_text(
+        json.dumps(
+            [
+                {"drop_k": 0, "snap_silence": False},
+                {"drop_k": 1, "snap_silence": False},
+                {"drop_k": 2, "snap_silence": False},
+            ]
+        )
+    )
+
+    model = PhoneModel(_make_posteriogram(in_dim=4), net_spec=dict(NET_SPEC))
+    monkeypatch.setattr(
+        tune.PhoneModel, "from_pretrained",
+        classmethod(lambda cls, *a, **kw: model),
+    )
+    monkeypatch.setattr(
+        tune.librosa,
+        "load",
+        lambda path, sr=None, mono=True: (
+            np.zeros(int(0.3 * sr), dtype=np.float32),
+            sr,
+        ),
+    )
+
+    # Count encoder calls — must be once per utterance, not per candidate.
+    calls = {"n": 0}
+    rng = np.random.default_rng(0)
+
+    def fake_extract(waveform):
+        calls["n"] += 1
+        return rng.normal(size=(30, 4)).astype(np.float32)
+
+    monkeypatch.setattr(model, "extract_features", fake_extract)
+
+    args = tune._get_args(
+        [
+            "--model", "ignored",
+            "--dataset_csv", str(csv_path),
+            "--hparams_json", str(grid_path),
+        ]
+    )
+    results = tune.run(args)
+
+    assert len(results) == 3  # one result per candidate
+    assert calls["n"] == 2  # 2 utterances encoded once each, not 2 * 3
+    # Results are ranked best-first.
+    scores = [r["score"] for r in results]
+    assert scores == sorted(scores, reverse=True)

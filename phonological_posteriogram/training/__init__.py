@@ -1,7 +1,7 @@
 """Training-time utilities for phonological-posteriogram models.
 
 Importing this submodule requires the optional `[train]` extra (praatio,
-scikit-learn, panphon, tqdm). Pure inference users don't need it.
+panphon, tqdm). Pure inference users don't need it.
 
 Submodules are imported lazily so that
 ``python -m phonological_posteriogram.training.<name>`` doesn't hit a
@@ -11,7 +11,7 @@ RuntimeWarning from ``runpy`` finding the submodule already in
 
 import importlib
 
-_LAZY = ("evaluate", "extract_features", "prepare_datasets", "train")
+_LAZY = ("evaluate", "extract_features", "prepare_datasets", "train", "tune")
 
 __all__ = list(_LAZY)
 

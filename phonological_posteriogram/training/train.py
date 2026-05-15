@@ -1,11 +1,10 @@
-"""Fit a Segmenter on per-phone SSL features and save the model.
+"""Fit a PhonologicalPosteriogram on per-phone SSL features and save a model.
 
 Reads a pickled DataFrame produced by ``training/extract_features.py`` (its
 ``df.attrs`` carries ``hf_repo``, ``encoder_layer``, ``pool``, ``sr``,
-``frame_shift``), fits the phonological-vector projections and the
-forward/backward regressors, and saves the artifact via
-``PhonologicalPosteriogram.save_pretrained`` so it can be reloaded with
-``PhonologicalPosteriogram.from_pretrained``.
+``frame_shift``), fits the three phonological-vector views and the two
+forward/backward regressors, wraps them in a :class:`PhoneModel`, and saves
+the artifact so it can be reloaded with ``PhoneModel.from_pretrained``.
 
 Run as::
 
@@ -22,8 +21,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..model import Segmenter
-from ..pretrained import PhonologicalPosteriogram
+from ..phone_model import PhoneModel
+from ..posteriogram import PhonologicalPosteriogram
+from ..segmenter import Segmenter
 
 REQUIRED_ATTRS = ("hf_repo", "encoder_layer", "sr", "frame_shift")
 
@@ -55,18 +55,7 @@ def _get_args(argv=None):
         default=10,
         help=(
             "Mel-spectrogram hop in ms used by the mel_svf signal at "
-            "segmentation time. Recorded in the artifact's net_spec."
-        ),
-    )
-    parser.add_argument(
-        "--silence_backend",
-        default="speech_plus",
-        choices=("speech_plus", "logreg"),
-        help=(
-            "How to build the silence detector. 'speech_plus' (default) uses "
-            "pv_ipa's 'speech+' projection — no extra training. 'logreg' "
-            "fits a scikit-learn LogisticRegression on the per-phone "
-            "features (silence = ipa == '_')."
+            "segmentation time. Stored in the artifact's hparams."
         ),
     )
     args = parser.parse_args(argv)
@@ -85,22 +74,21 @@ def run(args):
             "Re-run training/extract_features.py to regenerate it."
         )
 
-    segmenter = Segmenter.fit(
-        df,
-        frame_shift=int(attrs["frame_shift"]),
-        sr=int(attrs["sr"]),
-        mel_frame_shift_ms=int(args.mel_frame_shift_ms),
-        silence_backend=args.silence_backend,
-    )
+    # The expensive step: fit the weights-only PhonologicalPosteriogram.
+    posteriogram = PhonologicalPosteriogram.fit(df)
 
     net_spec = {
         "hf_repo": attrs["hf_repo"],
         "encoder_layer": int(attrs["encoder_layer"]),
         "frame_shift": int(attrs["frame_shift"]),
         "sr": int(attrs["sr"]),
-        "mel_frame_shift_ms": int(args.mel_frame_shift_ms),
     }
-    model = PhonologicalPosteriogram(segmenter=segmenter, net_spec=net_spec)
+    hparams = Segmenter.default_hparams()
+    hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
+
+    model = PhoneModel(
+        posteriogram=posteriogram, net_spec=net_spec, hparams=hparams
+    )
     out = model.save_pretrained(args.output_dir, filename=args.filename)
     print(f"Saved model artifact to {out}")
     return out

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .pretrained import PhonologicalPosteriogram
+from .phone_model import PhoneModel
 
 
 def _load_audio(path: Path, sr: int) -> np.ndarray:
@@ -48,7 +48,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    model = PhonologicalPosteriogram.from_pretrained(args.model, device=args.device)
+    model = PhoneModel.from_pretrained(args.model, device=args.device)
     waveform = _load_audio(args.audio, sr=model.net_spec["sr"])
 
     boundary_seconds = model.segment_seconds(
