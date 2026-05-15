@@ -180,17 +180,27 @@ def _prepare_voxangeles(root_path: Path):
 
     rows = []
     for path in tqdm((root_path / "data/audited_aligned").glob("**/*.TextGrid")):
-        grid = praatio.textgrid.openTextgrid(path, includeEmptyIntervals=False)
+        # Keep empty intervals so the phone rows tile the full audio
+        # (leading/trailing silence and internal gaps included). Dropping
+        # them would leave the GT not covering the whole clip, and every
+        # predicted boundary in the missing silence would score as a false
+        # positive.
+        grid = praatio.textgrid.openTextgrid(path, includeEmptyIntervals=True)
         tier_name = next(
             x for x in grid.tierNames if x in ("phone", "phones", "Narrow")
         )
         for entry in grid.getTier(tier_name).entries:
+            label = (entry.label or "").strip()
             rows.append(
                 {
                     "audio_path": str(path.with_suffix(".wav")),
                     "min": entry.start,
                     "max": entry.end,
-                    "ipa": entry.label,
+                    # Empty interval = silence. Map to the "_" token so the
+                    # row carries a non-null label that survives the CSV
+                    # round-trip (an empty cell would read back as NaN) and
+                    # the df.ipa.notna() filter downstream.
+                    "ipa": label if label else "_",
                     "split": "test",
                     "language": path.parent.name,
                 }
