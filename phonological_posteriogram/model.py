@@ -498,11 +498,11 @@ def _shift_signal(signal, shift_frames):
 
 class Segmenter:
     COMBINED_SIGNALS = (
-        # "frame_delta",
-        # "fwd_delta",
-        # "bwd_delta",
-        # "fwd_contrast",
-        # "bwd_contrast",
+        "frame_delta",
+        "fwd_delta",
+        "bwd_delta",
+        "fwd_contrast",
+        "bwd_contrast",
         "mel_svf",
     )
     COMBINED_SIGNAL_KWARGS = {
