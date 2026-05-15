@@ -216,8 +216,8 @@ def run(args):
     }[args.dataset_type]
     df = prep(args.dataset_path)
 
-    args.output_path.mkdir(parents=True, exist_ok=True)
-    csv_path = args.output_path / f"{args.dataset_type}.csv"
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = args.output_dir / f"{args.dataset_type}.csv"
     df.to_csv(str(csv_path), index=False)
     print("Stored to", csv_path)
 
