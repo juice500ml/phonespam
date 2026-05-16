@@ -120,6 +120,24 @@ def test_posteriogram_state_roundtrip():
     np.testing.assert_array_equal(reloaded.W_l1_to_ipa, post.W_l1_to_ipa)
 
 
+def test_posteriogram_project_activation():
+    """project() unifies raw and sigmoid via the `act` argument."""
+    in_dim = 4
+    pos = np.zeros((3, in_dim), dtype=np.float32)
+    pos[0] = np.array([2.0, 0, 0, 0], dtype=np.float32)
+    post = _make_posteriogram(in_dim=in_dim, ipa_pos_vecs=pos)
+    feats = np.array([[1.0, 0, 0, 0]], dtype=np.float32)
+
+    raw = post.project(feats, view="ipa", act="none")
+    sig = post.project(feats, view="ipa", act="sigmoid")
+    np.testing.assert_allclose(sig, 1.0 / (1.0 + np.exp(-raw)), rtol=1e-6)
+    # Default activation is "none" (raw projection).
+    np.testing.assert_array_equal(post.project(feats, view="ipa"), raw)
+
+    with pytest.raises(ValueError, match="activation"):
+        post.project(feats, view="ipa", act="bogus")
+
+
 def test_segmenter_construction():
     post = _make_posteriogram()
     seg = Segmenter(post, sr=16000, frame_shift=320)
@@ -172,6 +190,18 @@ def test_segmenter_default_hparams_self_consistent():
         assert set(spec) == {"name", "kwargs", "shift"}
     assert set(h["single_signal"]) == {"name", "kwargs", "shift"}
     assert "mel_frame_shift_ms" in h
+    assert h["activation"] in ("none", "sigmoid")
+    assert h["combine_method"] in ("min", "logmeanexp")
+
+
+def test_segmenter_hparams_merge_onto_defaults():
+    """A partial hparams dict still yields a complete config (missing keys
+    filled from default_hparams)."""
+    post = _make_posteriogram()
+    seg = Segmenter(post, sr=16000, frame_shift=320, hparams={"drop_k": 1})
+    assert seg.hparams["drop_k"] == 1
+    assert seg.hparams["activation"] == "none"  # filled from defaults
+    assert "combined_signals" in seg.hparams
 
 
 def test_segmenter_combines_duplicate_signal_specs():
@@ -195,6 +225,45 @@ def test_segmenter_combines_duplicate_signal_specs():
     feats = np.random.default_rng(0).normal(size=(30, 4)).astype(np.float32)
     preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
     assert isinstance(preds, np.ndarray)
+
+
+@pytest.mark.parametrize("combine_method", ["min", "logmeanexp"])
+def test_segmenter_combine_method_hparam(combine_method):
+    """Both combine methods run through segment()."""
+    post = _make_posteriogram(in_dim=4, n_feat=3)
+    seg = Segmenter(
+        post,
+        sr=16000,
+        frame_shift=320,
+        hparams={"combine_method": combine_method, "snap_silence": False},
+    )
+    feats = np.random.default_rng(1).normal(size=(30, 4)).astype(np.float32)
+    preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
+    assert isinstance(preds, np.ndarray)
+
+
+def test_segmenter_rejects_unknown_combine_method():
+    from phonological_posteriogram.segmenter import _combine_stacked
+
+    with pytest.raises(ValueError, match="combine_method"):
+        _combine_stacked(np.ones((2, 5)), "bogus")
+
+
+def test_normalize_signal_methods():
+    from phonological_posteriogram.segmenter import _normalize_signal
+
+    sig = np.array([2.0, 4.0, 6.0])
+    # "none" passes the values through unchanged (but copies).
+    out_none = _normalize_signal(sig, "none")
+    np.testing.assert_array_equal(out_none, sig)
+    assert out_none is not sig
+    # "min" subtracts the minimum.
+    np.testing.assert_array_equal(_normalize_signal(sig, "min"), [0, 2, 4])
+    # "minmax" rescales to [0, 1].
+    np.testing.assert_allclose(_normalize_signal(sig, "minmax"), [0, 0.5, 1])
+
+    with pytest.raises(ValueError, match="norm_method"):
+        _normalize_signal(sig, "bogus")
 
 
 def test_add_phone_context_splits_diphthongs():

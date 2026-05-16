@@ -120,7 +120,18 @@ def _bwd_contrast(proj_ipa, proj_l1, W_l1_to_ipa, lookbehind):
     return contrast
 
 
+NORM_METHODS = ("none", "min", "minmax")
+
+
 def _normalize_signal(signal, method):
+    """Normalize one per-frame signal before stacking.
+
+    ``"none"``: pass through unchanged. ``"min"``: subtract the (nan-)min so
+    the lowest finite value is 0. ``"minmax"``: rescale finite values to
+    [0, 1].
+    """
+    if method == "none":
+        return np.asarray(signal, dtype=float).copy()
     if method == "min":
         return signal - np.nanmin(signal)
     if method == "minmax":
@@ -134,14 +145,31 @@ def _normalize_signal(signal, method):
         else:
             sig[finite] = 0.0
         return sig
-    raise ValueError(f"Unknown norm_method: {method}")
+    raise ValueError(
+        f"Unknown norm_method {method!r}; choose one of {NORM_METHODS}."
+    )
+
+
+COMBINE_METHODS = ("min", "logmeanexp")
 
 
 def _combine_stacked(stacked, method):
+    """Combine the stacked per-frame signals into one signal.
+
+    ``"min"``: product over signals — a fuzzy-AND that stays at or below the
+    per-frame minimum. ``"logmeanexp"``: geometric mean, exp(mean(log(.))) —
+    a softer consensus.
+    """
     if method == "min":
         return np.prod(stacked, axis=0)
-    with np.errstate(invalid="ignore"):
-        return np.exp(np.mean(np.log(np.maximum(stacked, 1e-12)), axis=0))
+    if method == "logmeanexp":
+        with np.errstate(invalid="ignore"):
+            return np.exp(
+                np.mean(np.log(np.maximum(stacked, 1e-12)), axis=0)
+            )
+    raise ValueError(
+        f"Unknown combine_method {method!r}; choose one of {COMBINE_METHODS}."
+    )
 
 
 def _copy_spec(spec):
@@ -210,7 +238,14 @@ class Segmenter:
             ],
             "drop_k": cls.COMBINED_DROP_K,
             "combined_prominence": cls.COMBINED_PROMINENCE,
+            # How each signal is normalized before stacking
+            # ("none"/"min"/"minmax")...
             "norm_method": "min",
+            # ...and how the stacked signals are combined ("min"/"logmeanexp").
+            "combine_method": "min",
+            # Activation applied to the phonological-vector projections that
+            # feed the boundary signals: "none" (raw) or "sigmoid".
+            "activation": "none",
             "single_signal": _copy_spec(cls.DEFAULT_SINGLE_SIGNAL),
             "single_signal_prominence": cls.SINGLE_PROMINENCE,
             "snap_silence": True,
@@ -223,9 +258,9 @@ class Segmenter:
         self.posteriogram = posteriogram
         self.sr = int(sr)
         self.frame_shift = int(frame_shift)
-        self.hparams = (
-            dict(hparams) if hparams is not None else self.default_hparams()
-        )
+        # Merge onto defaults so a partial dict (or an artifact saved before
+        # a new hparam was added) still yields a complete config.
+        self.hparams = {**self.default_hparams(), **(hparams or {})}
 
     def with_hparams(self, hparams_override):
         """Return a copy with ``hparams_override`` merged on top.
@@ -304,7 +339,7 @@ class Segmenter:
             )
         if h["drop_k"] > 0:
             stacked = np.sort(stacked, axis=0)[h["drop_k"] :]
-        return _combine_stacked(stacked, norm)
+        return _combine_stacked(stacked, h["combine_method"])
 
     def segment(
         self, net_feats, waveform_np, use_combined=None, snap_silence=None
@@ -315,9 +350,10 @@ class Segmenter:
         if snap_silence is None:
             snap_silence = h["snap_silence"]
 
-        proj_ipa = self.posteriogram.project_raw(net_feats, view="ipa")
-        proj_r1 = self.posteriogram.project_raw(net_feats, view="r_1")
-        proj_l1 = self.posteriogram.project_raw(net_feats, view="l_1")
+        act = h["activation"]
+        proj_ipa = self.posteriogram.project(net_feats, view="ipa", act=act)
+        proj_r1 = self.posteriogram.project(net_feats, view="r_1", act=act)
+        proj_l1 = self.posteriogram.project(net_feats, view="l_1", act=act)
 
         if use_combined:
             signal = self._combined_signal(

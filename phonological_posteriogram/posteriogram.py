@@ -30,6 +30,20 @@ def _fill_gaps(raw_mask):
     return np.logical_or(raw_mask, neighbors_silent)
 
 
+ACTIVATIONS = ("none", "sigmoid")
+
+
+def _apply_activation(raw, act):
+    """Apply an output activation to a raw projection."""
+    if act == "none":
+        return raw
+    if act == "sigmoid":
+        return 1.0 / (1.0 + np.exp(-raw))
+    raise ValueError(
+        f"Unknown activation {act!r}; choose one of {ACTIVATIONS}."
+    )
+
+
 class _VectorView:
     """One phonological-vector view: per-feature pos/zero vectors + calibration.
 
@@ -174,13 +188,11 @@ class _VectorView:
 
     # -- projection ------------------------------------------------------- #
 
-    def project_raw(self, feats):
+    def project(self, feats, act="none"):
         W = self.pos_vecs - self.zero_vecs
         raw = feats @ W.T + self.biases[None, :]
-        return raw * self.scales[None, :]
-
-    def project(self, feats):
-        return 1.0 / (1.0 + np.exp(-self.project_raw(feats)))
+        raw = raw * self.scales[None, :]
+        return _apply_activation(raw, act)
 
     # -- serialization ---------------------------------------------------- #
 
@@ -211,7 +223,8 @@ class PhonologicalPosteriogram:
 
     Bundles the three views (``ipa``/``l_1``/``r_1``) and the two regressors.
     Construct with :meth:`fit` (the one expensive training step) or
-    :meth:`from_state`; query with :meth:`project_raw` / :meth:`project`.
+    :meth:`from_state`; query with :meth:`project` (``act='none'`` for the
+    raw projection, ``act='sigmoid'`` for the posteriogram).
     """
 
     def __init__(self, *, views, W_r1_to_ipa, W_l1_to_ipa):
@@ -249,10 +262,11 @@ class PhonologicalPosteriogram:
         prev_feats = np.stack(df_sorted.feat.values[:-1][same_utt])
         curr_feats = np.stack(df_sorted.feat.values[1:][same_utt])
 
-        proj_ipa_curr = views["ipa"].project_raw(curr_feats)
-        proj_ipa_prev = views["ipa"].project_raw(prev_feats)
-        proj_r1_prev = views["r_1"].project_raw(prev_feats)
-        proj_l1_next = views["l_1"].project_raw(curr_feats)
+        # Regressors are fit on the raw (un-activated) projections.
+        proj_ipa_curr = views["ipa"].project(curr_feats, act="none")
+        proj_ipa_prev = views["ipa"].project(prev_feats, act="none")
+        proj_r1_prev = views["r_1"].project(prev_feats, act="none")
+        proj_l1_next = views["l_1"].project(curr_feats, act="none")
 
         W_r1_to_ipa = np.linalg.lstsq(
             proj_r1_prev, proj_ipa_curr, rcond=None
@@ -267,13 +281,15 @@ class PhonologicalPosteriogram:
 
     # -- projection ------------------------------------------------------- #
 
-    def project_raw(self, feats, view="ipa"):
-        """Raw (pre-sigmoid) projection of per-frame features onto a view."""
-        return self.views[view].project_raw(feats)
+    def project(self, feats, view="ipa", act="none"):
+        """Project per-frame features onto a view.
 
-    def project(self, feats, view="ipa"):
-        """Sigmoid projection — for ``view='ipa'`` this is the posteriogram."""
-        return self.views[view].project(feats)
+        ``act`` selects the output activation: ``"none"`` returns the raw
+        (calibrated linear) projection; ``"sigmoid"`` squashes it to (0, 1).
+        For ``view='ipa'`` with ``act='sigmoid'`` this is the phonological
+        posteriogram.
+        """
+        return self.views[view].project(feats, act=act)
 
     def predict_silence_mask(self, feats, threshold=0.5):
         """Per-frame silence mask from the ``speech+`` posteriogram channel.
@@ -289,7 +305,8 @@ class PhonologicalPosteriogram:
                 "must include the silence token '_'."
             )
         idx = self.featnames.index("speech+")
-        proj = self.project(feats, view="ipa")
+        # The threshold is calibrated against the (0, 1) sigmoid output.
+        proj = self.project(feats, view="ipa", act="sigmoid")
         return _fill_gaps(proj[:, idx] > threshold)
 
     @property

@@ -157,7 +157,7 @@ class PhoneModel:
     def compute_posteriogram(self, waveform: np.ndarray) -> np.ndarray:
         """Per-frame phonological posteriogram for a single mono waveform."""
         feats = self.extract_features(waveform)
-        return self.posteriogram.project(feats, view="ipa")
+        return self.posteriogram.project(feats, view="ipa", act="sigmoid")
 
     def segment(
         self,
