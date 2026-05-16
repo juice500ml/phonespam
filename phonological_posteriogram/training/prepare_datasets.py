@@ -34,9 +34,9 @@ TIMIT_TO_IPA = {
     "ix": "ɨ", "axr": "ɚ", "ax-h": "ə̯",
     # Diphthongs
     "ey": "eɪ", "aw": "aʊ", "ay": "aɪ", "oy": "ɔɪ", "ow": "oʊ",
-    # Stop closures: dropped after being merged into the succeeding stop.
-    "bcl": None, "dcl": None, "gcl": None,
-    "pcl": None, "tcl": None, "kcl": None,
+    # Stop closures: will be dropped after being merged into the succeeding stop.
+    "bcl": "b", "dcl": "d", "gcl": "g",
+    "pcl": "p", "tcl": "t", "kcl": "k",
     # Non-speech: kept as the silence token "_" so the segmenter sees silence
     # frames during training.
     "pau": "_", "epi": "_", "h#": "_",
@@ -150,6 +150,8 @@ def _prepare_timit(timit_path: Path):
                     # Stop closures (bcl, dcl, ...) get merged into the
                     # succeeding stop by extending that stop's start time
                     # backwards to the closure's start.
+                    # If the closure doesn't have a preceding stop,
+                    # set the closure as the stop itself.
                     if phn in TIMIT_CLOSURE_OF:
                         closure = TIMIT_CLOSURE_OF[phn]
                         if (
@@ -158,6 +160,7 @@ def _prepare_timit(timit_path: Path):
                             and rows[-1]["audio_path"] == audio_path_str
                         ):
                             start = int(rows[-1]["min"] * 16000)
+                            rows[-1]["ipa"] = None  # set to None to be dropped later
 
                     rows.append(
                         {
@@ -181,10 +184,7 @@ def _prepare_voxangeles(root_path: Path):
     rows = []
     for path in tqdm((root_path / "data/audited_aligned").glob("**/*.TextGrid")):
         # Keep empty intervals so the phone rows tile the full audio
-        # (leading/trailing silence and internal gaps included). Dropping
-        # them would leave the GT not covering the whole clip, and every
-        # predicted boundary in the missing silence would score as a false
-        # positive.
+        # (leading/trailing silence and internal gaps included).
         grid = praatio.textgrid.openTextgrid(path, includeEmptyIntervals=True)
         tier_name = next(
             x for x in grid.tierNames if x in ("phone", "phones", "Narrow")
@@ -196,10 +196,6 @@ def _prepare_voxangeles(root_path: Path):
                     "audio_path": str(path.with_suffix(".wav")),
                     "min": entry.start,
                     "max": entry.end,
-                    # Empty interval = silence. Map to the "_" token so the
-                    # row carries a non-null label that survives the CSV
-                    # round-trip (an empty cell would read back as NaN) and
-                    # the df.ipa.notna() filter downstream.
                     "ipa": label if label else "_",
                     "split": "test",
                     "language": path.parent.name,
