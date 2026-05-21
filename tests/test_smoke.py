@@ -192,6 +192,7 @@ def test_segmenter_default_hparams_self_consistent():
     assert "mel_frame_shift_ms" in h
     assert h["activation"] in ("none", "sigmoid")
     assert h["combine_method"] in ("min", "logmeanexp")
+    assert h["distance"] in ("cosine", "l2")
 
 
 def test_segmenter_hparams_merge_onto_defaults():
@@ -247,6 +248,40 @@ def test_segmenter_rejects_unknown_combine_method():
 
     with pytest.raises(ValueError, match="combine_method"):
         _combine_stacked(np.ones((2, 5)), "bogus")
+
+
+def test_pair_distance_methods():
+    from phonological_posteriogram.segmenter import _pair_distance
+
+    a = np.array([[1.0, 0.0], [1.0, 0.0]])
+    b = np.array([[1.0, 0.0], [0.0, 1.0]])
+    # Cosine: identical rows -> 0; orthogonal rows -> 1.
+    np.testing.assert_allclose(_pair_distance(a, b, "cosine"), [0.0, 1.0])
+    # L2: ||(0,0)|| = 0; ||(1,-1)|| = sqrt(2).
+    np.testing.assert_allclose(
+        _pair_distance(a, b, "l2"), [0.0, np.sqrt(2)]
+    )
+    # Cosine zero-norm fallback: 1.0.
+    zeros = np.zeros_like(a)
+    np.testing.assert_array_equal(_pair_distance(a, zeros, "cosine"), [1.0, 1.0])
+
+    with pytest.raises(ValueError, match="distance"):
+        _pair_distance(a, b, "bogus")
+
+
+@pytest.mark.parametrize("distance", ["cosine", "l2"])
+def test_segmenter_distance_hparam(distance):
+    """Both distances run through segment()."""
+    post = _make_posteriogram(in_dim=4, n_feat=3)
+    seg = Segmenter(
+        post,
+        sr=16000,
+        frame_shift=320,
+        hparams={"distance": distance, "snap_silence": False},
+    )
+    feats = np.random.default_rng(2).normal(size=(30, 4)).astype(np.float32)
+    preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
+    assert isinstance(preds, np.ndarray)
 
 
 def test_normalize_signal_methods():

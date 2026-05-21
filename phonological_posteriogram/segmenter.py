@@ -42,7 +42,7 @@ def _melspec_kaldi(y, *, sr, frame_shift_ms, n_mels=40):
     return feats.cpu().numpy()
 
 
-def _mel_svf(mel_frames, left, right):
+def _mel_svf(mel_frames, left, right, distance="cosine"):
     mel_frames = np.asarray(mel_frames, dtype=float)
     n = mel_frames.shape[0]
     signal = np.full(n, np.nan)
@@ -50,14 +50,7 @@ def _mel_svf(mel_frames, left, right):
         return signal
     a = mel_frames[: n - left - right]
     b = mel_frames[left + right :]
-    dots = np.sum(a * b, axis=1)
-    norms_a = np.linalg.norm(a, axis=1)
-    norms_b = np.linalg.norm(b, axis=1)
-    denom = norms_a * norms_b
-    valid = denom > 0
-    out = np.full(len(a), np.nan)
-    out[valid] = 1.0 - dots[valid] / denom[valid]
-    signal[left : n - right] = out
+    signal[left : n - right] = _pair_distance(a, b, distance)
     finite = np.isfinite(signal)
     if finite.any():
         lo, hi = np.nanmin(signal), np.nanmax(signal)
@@ -66,34 +59,52 @@ def _mel_svf(mel_frames, left, right):
     return signal
 
 
-def _mel_svf_signal(audio, left, right, target_len, *, sr, mel_frame_shift_ms):
+def _mel_svf_signal(
+    audio, left, right, target_len, *, sr, mel_frame_shift_ms, distance="cosine"
+):
     mel = _melspec_kaldi(audio, sr=sr, frame_shift_ms=mel_frame_shift_ms)
-    sig = _mel_svf(mel, left=left, right=right)
+    sig = _mel_svf(mel, left=left, right=right, distance=distance)
     if len(sig) == 0 or target_len == 0:
         return np.full(target_len, np.nan, dtype=np.float32)
     indices = np.round(np.linspace(0, len(sig) - 1, target_len)).astype(int)
     return sig[indices].astype(np.float32)
 
 
-def _cos_dist_pairs(a, b):
-    dots = np.sum(a * b, axis=1)
-    norms = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
-    out = np.ones(len(a))
-    valid = norms > 0
-    out[valid] = 1.0 - dots[valid] / norms[valid]
-    return out
+DISTANCES = ("cosine", "l2")
 
 
-def _delta(proj, offset):
+def _pair_distance(a, b, kind="cosine"):
+    """Per-row distance between corresponding rows of ``a`` and ``b``.
+
+    ``"cosine"``: 1 - cos_sim; pairs with a zero-norm vector fall back to 1
+    (max distance). ``"l2"``: Euclidean ``||a - b||``.
+    """
+    if kind == "cosine":
+        dots = np.sum(a * b, axis=1)
+        norms = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
+        out = np.ones(len(a))
+        valid = norms > 0
+        out[valid] = 1.0 - dots[valid] / norms[valid]
+        return out
+    if kind == "l2":
+        return np.linalg.norm(a - b, axis=1)
+    raise ValueError(
+        f"Unknown distance {kind!r}; choose one of {DISTANCES}."
+    )
+
+
+def _delta(proj, offset, distance="cosine"):
     T = proj.shape[0]
     delta = np.full(T, np.nan)
     if T <= offset:
         return delta
-    delta[: T - offset] = _cos_dist_pairs(proj[:-offset], proj[offset:])
+    delta[: T - offset] = _pair_distance(
+        proj[:-offset], proj[offset:], distance
+    )
     return delta
 
 
-def _fwd_contrast(proj_ipa, proj_r1, W_r1_to_ipa, lookahead):
+def _fwd_contrast(proj_ipa, proj_r1, W_r1_to_ipa, lookahead, distance="cosine"):
     T = proj_ipa.shape[0]
     fwd_proj = proj_r1 @ W_r1_to_ipa
     contrast = np.full(T, np.nan)
@@ -101,22 +112,22 @@ def _fwd_contrast(proj_ipa, proj_r1, W_r1_to_ipa, lookahead):
         return contrast
     n = T - lookahead
     fp = fwd_proj[:n]
-    contrast[:n] = _cos_dist_pairs(fp, proj_ipa[:n]) - _cos_dist_pairs(
-        fp, proj_ipa[lookahead:]
+    contrast[:n] = _pair_distance(fp, proj_ipa[:n], distance) - _pair_distance(
+        fp, proj_ipa[lookahead:], distance
     )
     return contrast
 
 
-def _bwd_contrast(proj_ipa, proj_l1, W_l1_to_ipa, lookbehind):
+def _bwd_contrast(proj_ipa, proj_l1, W_l1_to_ipa, lookbehind, distance="cosine"):
     T = proj_ipa.shape[0]
     bwd_proj = proj_l1 @ W_l1_to_ipa
     contrast = np.full(T, np.nan)
     if T <= lookbehind:
         return contrast
     bp = bwd_proj[lookbehind:]
-    contrast[lookbehind:] = _cos_dist_pairs(
-        bp, proj_ipa[lookbehind:]
-    ) - _cos_dist_pairs(bp, proj_ipa[: T - lookbehind])
+    contrast[lookbehind:] = _pair_distance(
+        bp, proj_ipa[lookbehind:], distance
+    ) - _pair_distance(bp, proj_ipa[: T - lookbehind], distance)
     return contrast
 
 
@@ -248,6 +259,9 @@ class Segmenter:
             "activation": "none",
             "single_signal": _copy_spec(cls.DEFAULT_SINGLE_SIGNAL),
             "single_signal_prominence": cls.SINGLE_PROMINENCE,
+            # Pairwise distance for all distance-based signals
+            # (frame_delta, fwd/bwd contrast, mel_svf): "cosine" or "l2".
+            "distance": "cosine",
             "snap_silence": True,
             "snap_tolerance": 2,
             "silence_threshold": 0.5,
@@ -275,18 +289,20 @@ class Segmenter:
         )
 
     def _signal(self, name, proj_ipa, proj_r1, proj_l1, waveform_np, kwargs):
+        distance = self.hparams["distance"]
         if name == "frame_delta":
-            return _delta(proj_ipa, kwargs["offset"])
+            return _delta(proj_ipa, kwargs["offset"], distance=distance)
         if name == "fwd_delta":
-            return _delta(proj_r1, kwargs["offset"])
+            return _delta(proj_r1, kwargs["offset"], distance=distance)
         if name == "bwd_delta":
-            return _delta(proj_l1, kwargs["offset"])
+            return _delta(proj_l1, kwargs["offset"], distance=distance)
         if name == "fwd_contrast":
             return _fwd_contrast(
                 proj_ipa,
                 proj_r1,
                 self.posteriogram.W_r1_to_ipa,
                 kwargs["lookahead"],
+                distance=distance,
             )
         if name == "bwd_contrast":
             return _bwd_contrast(
@@ -294,6 +310,7 @@ class Segmenter:
                 proj_l1,
                 self.posteriogram.W_l1_to_ipa,
                 kwargs["lookbehind"],
+                distance=distance,
             )
         if name == "mel_svf":
             return _mel_svf_signal(
@@ -303,6 +320,7 @@ class Segmenter:
                 target_len=proj_ipa.shape[0],
                 sr=self.sr,
                 mel_frame_shift_ms=self.hparams["mel_frame_shift_ms"],
+                distance=distance,
             )
         raise ValueError(f"Unknown signal: {name}")
 
