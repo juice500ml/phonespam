@@ -22,7 +22,6 @@ optionally broken down by IPA symbol.
 
 from __future__ import annotations
 
-import argparse
 import csv
 import io
 import logging
@@ -31,6 +30,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import numpy as np
+import panphon.distance
 
 log = logging.getLogger(__name__)
 
@@ -536,97 +536,142 @@ class SegmentationEvaluator:
 
 
 # ---------------------------------------------------------------------- #
-# Demo                                                                    #
+# Phone recognition evaluation                                            #
 # ---------------------------------------------------------------------- #
 
 
-def _demo(argv: Optional[List[str]] = None) -> None:
-    """Run the example from the original snippet end-to-end.
+def _levenshtein(a, b):
+    """Standard Levenshtein distance between two token lists."""
+    a = list(a)
+    b = list(b)
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        curr = [i]
+        for j, y in enumerate(b, 1):
+            cost = 0 if x == y else 1
+            curr.append(
+                min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost)
+            )
+        prev = curr
+    return prev[-1]
 
-    Invoke with `python -m phonological_posteriogram.evaluation [--forced]`.
+
+def _as_labels(items):
+    """Accept a list of label strings or a list of SegmentationUnit; return labels."""
+    if not items:
+        return []
+    if hasattr(items[0], "label"):
+        return [u.label for u in items]
+    return list(items)
+
+
+class PhoneRecognitionEvaluator:
+    """Evaluate per-segment phone predictions against ground truth.
+
+    Two metrics:
+      * **PER** (Phone Error Rate) — token-level Levenshtein distance
+        between the predicted and reference label sequences, normalized by
+        the reference length. Each item in the predicted/reference list is
+        treated as one token (so a compound label like ``"eɪ"`` counts as
+        one token, not two).
+      * **PFER** (Phonological Feature Error Rate) — uses panphon's
+        :func:`panphon.distance.Distance.feature_edit_distance`, which
+        weights substitutions by phonological-feature dissimilarity (a
+        ``p``→``b`` substitution costs less than ``p``→``i``). The
+        labels are joined into IPA strings and panphon re-segments them
+        internally; the result is normalized by the reference length.
+
+    Both ``evaluate`` and ``evaluate_batch`` accept either a list of label
+    strings or a list of :class:`SegmentationUnit` (whose ``.label`` is
+    used). By default the silence token ``"_"`` is dropped from both sides
+    before scoring (silence is trivial to "recognize" and standard PER
+    excludes it).
     """
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--forced",
-        action="store_true",
-        help="Run in forced mode (per-phone stats; requires equal counts).",
-    )
-    args = parser.parse_args(argv)
-    evaluator = SegmentationEvaluator(tolerance_ms=20, forced=args.forced)
-    mode_label = "Forced" if args.forced else "Free"
 
-    print("=" * 60)
-    print(f"Example 1: Single Segment Evaluation ({mode_label} mode)")
-    print("=" * 60)
+    def __init__(self, *, skip_labels=frozenset({"_"})):
+        self.skip_labels = frozenset(skip_labels) if skip_labels else frozenset()
+        self._dist = panphon.distance.Distance()
 
-    ground_truth = [
-        SegmentationUnit(0.0, 0.1, "AH"),
-        SegmentationUnit(0.1, 0.2, "T"),
-        SegmentationUnit(0.2, 0.3, "AH"),
-        SegmentationUnit(0.3, 0.4, "K"),
-    ]
-    predicted = [
-        SegmentationUnit(0.01, 0.11, "AH"),
-        SegmentationUnit(0.11, 0.21, "T"),
-        SegmentationUnit(0.21, 0.31, "AH"),
-        SegmentationUnit(0.31, 0.41, "K"),
-    ]
-    symbols = ["AH", "T", "AH", "K"]
+    def _filter(self, labels):
+        if not self.skip_labels:
+            return labels
+        return [l for l in labels if l not in self.skip_labels]
 
-    results = evaluator.evaluate_boundaries(
-        predicted, ground_truth, symbols if args.forced else None
-    )
-    evaluator.pretty_print(results)
+    def per(self, predicted, reference) -> float:
+        """Phone Error Rate for one utterance."""
+        pred = self._filter(_as_labels(predicted))
+        ref = self._filter(_as_labels(reference))
+        if not ref:
+            return 0.0
+        return _levenshtein(pred, ref) / len(ref)
 
-    print("\n" + "=" * 60)
-    print(f"Example 2: Batch Evaluation ({mode_label} mode)")
-    print("=" * 60)
+    def pfer(self, predicted, reference) -> float:
+        """Phonological Feature Error Rate for one utterance.
 
-    batch_pred = {
-        "segment_001": [
-            SegmentationUnit(0.01, 0.11, "AH"),
-            SegmentationUnit(0.11, 0.21, "T"),
-            SegmentationUnit(0.21, 0.31, "AH"),
-        ],
-        "segment_002": [
-            SegmentationUnit(0.02, 0.12, "K"),
-            SegmentationUnit(0.12, 0.22, "AH"),
-        ],
-        "segment_003": [
-            SegmentationUnit(0.0, 0.1, "T"),
-            SegmentationUnit(0.1, 0.2, "AH"),
-            SegmentationUnit(0.2, 0.3, "K"),
-            SegmentationUnit(0.3, 0.4, "AH"),
-        ],
-    }
-    batch_gt = {
-        "segment_001": [
-            SegmentationUnit(0.0, 0.1, "AH"),
-            SegmentationUnit(0.1, 0.2, "T"),
-            SegmentationUnit(0.2, 0.3, "AH"),
-        ],
-        "segment_002": [
-            SegmentationUnit(0.0, 0.1, "K"),
-            SegmentationUnit(0.1, 0.2, "AH"),
-        ],
-        "segment_003": [
-            SegmentationUnit(0.0, 0.1, "T"),
-            SegmentationUnit(0.1, 0.2, "AH"),
-            SegmentationUnit(0.2, 0.3, "K"),
-            SegmentationUnit(0.3, 0.4, "AH"),
-        ],
-    }
-    batch_symbols = {
-        "segment_001": ["AH", "T", "AH"],
-        "segment_002": ["K", "AH"],
-        "segment_003": ["T", "AH", "K", "AH"],
-    }
+        Uses panphon's ``feature_edit_distance`` over the joined IPA
+        strings, divided by the reference token count.
+        """
+        pred = self._filter(_as_labels(predicted))
+        ref = self._filter(_as_labels(reference))
+        if not ref:
+            return 0.0
+        cost = self._dist.feature_edit_distance(
+            "".join(pred), "".join(ref)
+        )
+        return float(cost) / len(ref)
 
-    batch_results = evaluator.evaluate_batch(
-        batch_pred, batch_gt, batch_symbols if args.forced else None
-    )
-    evaluator.pretty_print(batch_results)
+    def evaluate(self, predicted, reference) -> Dict[str, float]:
+        return {"per": self.per(predicted, reference),
+                "pfer": self.pfer(predicted, reference)}
 
+    def evaluate_batch(
+        self,
+        predictions: Dict[str, List],
+        ground_truth: Dict[str, List],
+    ) -> Dict:
+        """Micro-averaged PER and PFER over a batch of utterances.
 
-if __name__ == "__main__":
-    _demo()
+        Both dicts map utterance id to either a list of label strings or a
+        list of :class:`SegmentationUnit`. PER and PFER are aggregated by
+        summing per-utterance distances and reference counts (rather than
+        averaging per-utterance rates), so each token contributes equally.
+        """
+        assert any(uid in predictions for uid in ground_truth), (
+            "No ground_truth id matched any prediction key — likely a "
+            f"key-scheme mismatch. Sample keys: "
+            f"gt={list(ground_truth)[:3]}, pred={list(predictions)[:3]}"
+        )
+
+        total_per_d = 0
+        total_pfer_d = 0.0
+        total_ref_len = 0
+        n_utts = 0
+        for uid, ref_units in ground_truth.items():
+            if uid not in predictions:
+                log.warning("Utterance %s missing in predictions; skipping.", uid)
+                continue
+            pred = self._filter(_as_labels(predictions[uid]))
+            ref = self._filter(_as_labels(ref_units))
+            if not ref:
+                continue
+            total_per_d += _levenshtein(pred, ref)
+            total_pfer_d += float(
+                self._dist.feature_edit_distance(
+                    "".join(pred), "".join(ref)
+                )
+            )
+            total_ref_len += len(ref)
+            n_utts += 1
+
+        if total_ref_len == 0:
+            return {}
+        return {
+            "per": total_per_d / total_ref_len,
+            "pfer": total_pfer_d / total_ref_len,
+            "n_utterances": n_utts,
+            "total_ref_phones": total_ref_len,
+        }

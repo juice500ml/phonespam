@@ -1,5 +1,7 @@
 """Smoke tests that don't require any model downloads or audio files."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -7,6 +9,7 @@ import torch
 import phonological_posteriogram as pp
 from phonological_posteriogram.phone_model import PhoneModel
 from phonological_posteriogram.posteriogram import PhonologicalPosteriogram
+from phonological_posteriogram.recognizer import Recognizer
 from phonological_posteriogram.segmenter import Segmenter
 
 NET_SPEC = {
@@ -51,6 +54,37 @@ def _make_posteriogram_state(in_dim=4, n_feat=3, ipa_featnames=None,
         "W_r1_to_ipa": np.eye(n_feat, dtype=np.float32),
         "W_l1_to_ipa": np.eye(n_feat, dtype=np.float32),
     }
+
+
+def _wire_recognizer(rec, n_feat=3):
+    """Hand-populate a Recognizer's attributes for tests (no panphon)."""
+    rec.vocab = ["_"] + [f"phone_{i}" for i in range(n_feat - 1)]
+    rec.predmat = np.eye(n_feat, dtype=np.float32)
+    rec._vocab_to_idx = {p: i for i, p in enumerate(rec.vocab)}
+    rec._mask_cache = {}
+    rec.hparams = {}
+    return rec
+
+
+def _make_phone_model(monkeypatch, posteriogram, net_spec, *, n_feat=3):
+    """Construct a PhoneModel without paying the panphon predmat-build cost.
+
+    The dev env may not have panphon installed (it's a hard dep at runtime
+    but optional for unit tests). We stub Recognizer.__init__ to a no-op
+    and hand-wire the recognizer's attributes afterward.
+    """
+    monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
+    model = PhoneModel(posteriogram, net_spec=net_spec)
+    _wire_recognizer(model.recognizer, n_feat=n_feat)
+    return model
+
+
+def _make_recognizer(n_feat=3):
+    """Bypass Recognizer.__init__ to avoid actually building the panphon
+    predmat — that's expensive (iterates the whole panphon segment table)
+    and the recognize() logic only needs a hand-set vocab + predmat plus
+    the per-instance mask cache."""
+    return _wire_recognizer(Recognizer.__new__(Recognizer), n_feat=n_feat)
 
 
 def _make_posteriogram(**kw):
@@ -146,7 +180,9 @@ def test_segmenter_construction():
     assert seg.posteriogram is post
 
 
-def test_phone_model_save_and_load_roundtrip(tmp_path):
+def test_phone_model_save_and_load_roundtrip(tmp_path, monkeypatch):
+    # Bypass Recognizer.__init__ (panphon predmat build) for from_pretrained.
+    monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
     artifact = _make_artifact()
     torch.save(artifact, tmp_path / "model.pt")
 
@@ -165,17 +201,372 @@ def test_phone_model_save_and_load_roundtrip(tmp_path):
     )
 
 
-def test_from_pretrained_accepts_file_path(tmp_path):
+def test_from_pretrained_accepts_file_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
     artifact = _make_artifact()
     torch.save(artifact, tmp_path / "custom.pt")
     model = PhoneModel.from_pretrained(tmp_path / "custom.pt")
     assert model.segmenter().frame_shift == 320
 
 
-def test_phone_model_segmenter_hparam_override():
+def test_phone_model_frame_to_time_roundtrip(monkeypatch):
+    """PhoneModel.frame_to_time is the model-accurate inverse of
+    SSLEncoder.time_to_frame: for the wav2vec2 conv stack,
+    output_lengths(L) = L/stride - 1 in the typical regime, so
+    k_eff_samples == stride and the round-trip is exact."""
+    # Mirror what extract_features.py records.
+    stride = 320
+    k_eff = stride  # wav2vec2-family
+    model = _make_phone_model(
+        monkeypatch,
+        _make_posteriogram(),
+        net_spec={**NET_SPEC, "k_eff_samples": k_eff, "frame_shift": stride},
+    )
+    sr = NET_SPEC["sr"]
+
+    # For wav2vec2 the relation output_lengths(L) = L/stride - 1 is exact
+    # in the large-L regime: indices [0..L/stride - 2] are valid, so the
+    # last-valid-index for time t is (t*sr)/stride - 2 and that index's
+    # emergence time is exactly t.
+    for t in (0.04, 0.10, 0.50, 1.00):
+        count = int(t * sr) // stride - 1   # output_lengths
+        last_idx = count - 1
+        np.testing.assert_allclose(
+            model.frame_to_time(np.array([last_idx])),
+            [t],
+            atol=1e-6,
+        )
+
+    # Backward compat: artifacts without k_eff_samples fall back to the
+    # naive `idx * stride / sr` formula.
+    legacy = _make_phone_model(
+        monkeypatch,
+        _make_posteriogram(),
+        net_spec={**NET_SPEC, "frame_shift": stride},  # no k_eff_samples
+    )
+    np.testing.assert_allclose(
+        legacy.frame_to_time(np.array([4])), [4 * stride / sr]
+    )
+
+
+def test_recognizer_phoneme_without_lang_raises():
+    """phoneme=True (without a language) is a recognize()-time error: the
+    construct-time predmat is language-agnostic now."""
+    rec = _make_recognizer(n_feat=3)
+    posteriogram = np.zeros((4, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="phoneme=True"):
+        rec.recognize(posteriogram, [], phoneme=True)
+
+
+def test_recognizer_phoneme_with_vocab_raises():
+    """phoneme=True conflicts with an explicit ``vocab=`` list."""
+    rec = _make_recognizer(n_feat=3)
+    posteriogram = np.zeros((4, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="phoneme=True"):
+        rec.recognize(posteriogram, [], vocab=["p", "t"], phoneme=True)
+
+
+def test_recognizer_rejects_conflicting_vocab_args():
+    """Pass at most one of vocab / lang / phoible_id."""
+    rec = _make_recognizer(n_feat=3)
+    posteriogram = np.zeros((4, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="at most one"):
+        rec.recognize(posteriogram, [], lang="Korean", phoible_id=1)
+    with pytest.raises(ValueError, match="at most one"):
+        rec.recognize(posteriogram, [], vocab=["p"], lang="Korean")
+    with pytest.raises(ValueError, match="at most one"):
+        rec.recognize(posteriogram, [], vocab=["p"], phoible_id=1)
+
+
+def test_recognizer_resolves_unknown_language():
+    from phonological_posteriogram.recognizer import _resolve_lang
+
+    with pytest.raises(ValueError, match="not found in Phoible"):
+        _resolve_lang("zzz_no_such_language")
+
+
+def test_recognizer_resolves_ambiguous_language_picks_smallest_id():
+    """A language with multiple inventories picks the smallest InventoryID
+    (with a warning pointing at phoible.org for context)."""
+    from phonological_posteriogram.recognizer import _phoible, _resolve_lang
+
+    df = _phoible()
+    # Find a LanguageName that has >1 InventoryID (Phoible has many).
+    counts = df.groupby("LanguageName")["InventoryID"].nunique()
+    ambiguous = counts[counts > 1]
+    if ambiguous.empty:
+        pytest.skip("no ambiguous language names in this Phoible snapshot")
+    name = ambiguous.index[0]
+    expected = int(
+        df[df["LanguageName"] == name]["InventoryID"].min()
+    )
+    with pytest.warns(UserWarning, match="https://phoible.org/languages/"):
+        resolved = _resolve_lang(name)
+    assert resolved == expected
+
+
+def test_recognizer_load_inventory_helpers():
+    """Phoible CSV is packaged and parses correctly; _load_inventory drops
+    phones panphon doesn't recognize."""
+    from phonological_posteriogram.recognizer import _phoible, _load_inventory
+
+    df = _phoible()
+    # Pick the first inventory and verify allophone parsing.
+    inv_id = int(df["InventoryID"].iloc[0])
+    phonemes = _load_inventory(inv_id, phoneme=True)
+    allophones = _load_inventory(inv_id, phoneme=False)
+    assert len(phonemes) > 0
+    assert len(allophones) >= len(phonemes)  # surface forms ⊇ phonemes
+    # The cache key is (id, phoneme); a second call returns the same tuple.
+    assert _load_inventory(inv_id, phoneme=True) is phonemes
+
+
+def test_recognizer_is_pure_posteriogram_plus_boundaries():
+    """Recognizer.recognize is a pure mapping of (posteriogram, boundaries)
+    -> per-segment labels; no segmenter or posteriogram object inside.
+    Output is *frame-based* (start_frame, end_frame, label) triples — the
+    caller handles frame→time conversion."""
+    rec = _make_recognizer(n_feat=3)
+    assert not hasattr(rec, "posteriogram")
+    assert not hasattr(rec, "segmenter")
+    assert not hasattr(rec, "_frame_to_time")  # frame→time isn't this class's job
+
+    # Pre-computed per-frame posteriogram (30 frames, 3 feats). Centers of
+    # [0,10), [10,20), [20,30) are 5, 15, 25 — arrange those to peak at
+    # distinct features.
+    posteriogram = np.full((30, 3), 0.1, dtype=np.float32)
+    posteriogram[5] = [0.9, 0.1, 0.1]    # → "_"
+    posteriogram[15] = [0.1, 0.9, 0.1]   # → "phone_0"
+    posteriogram[25] = [0.1, 0.1, 0.9]   # → "phone_1"
+
+    triples = rec.recognize(posteriogram, [10, 20])
+    assert triples == [
+        (0, 10, "_"),
+        (10, 20, "phone_0"),
+        (20, 30, "phone_1"),
+    ]
+
+
+def test_recognizer_handles_empty_boundaries():
+    """No boundaries → one segment covering the whole feature span."""
+    rec = _make_recognizer(n_feat=3)
+    posteriogram = np.tile(np.array([0.9, 0.1, 0.1], dtype=np.float32), (8, 1))
+    assert rec.recognize(posteriogram, []) == [(0, 8, "_")]
+
+
+def test_recognizer_vocab_constrains_output(monkeypatch):
+    """Passing ``vocab=`` constrains the argmax to those phones (+ silence)."""
+    import phonological_posteriogram.recognizer as rec_mod
+
+    # The fake vocab names ("phone_0", ...) aren't panphon-known, so stub
+    # _validate_vocab to pass them through unchanged.
+    monkeypatch.setattr(rec_mod, "_validate_vocab", lambda v: tuple(v))
+
+    rec = _make_recognizer(n_feat=3)
+    # Without a vocab constraint, the center of [0, 6) is frame 3 with
+    # posteriogram aligned to "phone_1".
+    posteriogram = np.full((6, 3), 0.1, dtype=np.float32)
+    posteriogram[3] = [0.1, 0.1, 0.9]   # → "phone_1" unconstrained
+    assert rec.recognize(posteriogram, []) == [(0, 6, "phone_1")]
+
+    # With vocab=["phone_0"], "phone_1" is masked out. Silence "_" is
+    # always allowed; with the asymmetric scores below, phone_0 wins.
+    posteriogram[3] = [0.1, 0.5, 0.9]   # silence=0.1, phone_0=0.5, phone_1=0.9
+    triples = rec.recognize(posteriogram, [], vocab=["phone_0"])
+    assert triples == [(0, 6, "phone_0")]
+
+
+def test_recognizer_vocab_unknown_phones_are_filtered(recwarn):
+    """Unknown phones in user vocab are dropped (with a warning)."""
+    from phonological_posteriogram.recognizer import _validate_vocab
+
+    # Real panphon-known phones plus a junk one. _validate_vocab is cached;
+    # use a unique junk token so this test isn't affected by prior runs.
+    panphon = pytest.importorskip("panphon")  # noqa: F841 - needs panphon
+    out = _validate_vocab(("p", "t", "zzzz_not_a_phone_xyz"))
+    assert "zzzz_not_a_phone_xyz" not in out
+    assert "p" in out and "t" in out
+    assert any("not recognized by panphon" in str(w.message) for w in recwarn.list)
+
+
+def test_recognizer_vocab_all_unknown_raises():
+    """A vocab of only-unknown phones raises (nothing to constrain to)."""
+    from phonological_posteriogram.recognizer import _validate_vocab
+
+    pytest.importorskip("panphon")
+    with pytest.raises(ValueError, match="no panphon-known phones"):
+        _validate_vocab(("zzz1_unknown_a", "zzz2_unknown_b"))
+
+
+def test_phone_model_embeds_recognizer(monkeypatch):
+    """PhoneModel exposes the Recognizer as an attribute (no factory).
+
+    Frame→time conversion is the model's job, not the recognizer's, so the
+    embedded Recognizer carries no ``_frame_to_time`` attribute.
+    """
+    state = _make_posteriogram_state(in_dim=4)
+    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(monkeypatch, post, dict(NET_SPEC))
+    assert isinstance(model.recognizer, Recognizer)
+    assert not hasattr(model.recognizer, "_frame_to_time")
+
+
+def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
+    """model.recognize(waveform) chains extract_features + segmenter +
+    embedded recognizer, returning a list of SegmentationUnit in seconds."""
+    from phonological_posteriogram.evaluation import SegmentationUnit
+
+    state = _make_posteriogram_state(in_dim=4)
+    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(
+        monkeypatch, post, {**NET_SPEC, "k_eff_samples": 320}
+    )
+
+    extract_calls = {"n": 0}
+
+    def fake_extract(wav):
+        extract_calls["n"] += 1
+        return np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (30, 1))
+
+    monkeypatch.setattr(model, "extract_features", fake_extract)
+
+    # Stub the segmenter factory to return a tiny object whose .segment
+    # returns fixed boundaries.
+    monkeypatch.setattr(
+        model, "segmenter",
+        lambda overrides=None: type("S", (), {
+            "segment": lambda self, f, w, **k: np.array([10, 20])
+        })(),
+    )
+
+    units = model.recognize(np.zeros(16000, dtype=np.float32))
+
+    assert extract_calls["n"] == 1  # encoder runs exactly once
+    assert len(units) == 3
+    assert all(isinstance(u, SegmentationUnit) for u in units)
+    # Posteriogram is high on speech+ everywhere → every segment labels "_".
+    assert [u.label for u in units] == ["_", "_", "_"]
+    starts = [u.start for u in units]
+    ends = [u.end for u in units]
+    assert starts == sorted(starts)
+    assert ends == sorted(ends)
+
+
+def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
+    """model.recognize accepts a file path: it dispatches through load_audio
+    and runs the full pipeline end-to-end without a precomputed waveform."""
+    from phonological_posteriogram.evaluation import SegmentationUnit
+
+    state = _make_posteriogram_state(in_dim=4)
+    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(
+        monkeypatch, post, {**NET_SPEC, "k_eff_samples": 320}
+    )
+
+    load_calls = []
+
+    def fake_load_audio(self, path):
+        load_calls.append(str(path))
+        return np.zeros(int(0.3 * NET_SPEC["sr"]), dtype=np.float32)
+
+    monkeypatch.setattr(PhoneModel, "load_audio", fake_load_audio)
+    monkeypatch.setattr(
+        model, "extract_features",
+        lambda w: np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (10, 1)),
+    )
+    monkeypatch.setattr(
+        model, "segmenter",
+        lambda overrides=None: type("S", (), {
+            "segment": lambda self, f, w, **k: np.array([5])
+        })(),
+    )
+
+    fake_path = tmp_path / "speech.wav"
+    units = model.recognize(fake_path)
+    assert load_calls == [str(fake_path)]
+    assert len(units) == 2
+    assert all(isinstance(u, SegmentationUnit) for u in units)
+
+
+def test_phone_model_recognize_resamples_with_warning(monkeypatch):
+    """Mismatched ``sr=`` triggers librosa.resample and a UserWarning."""
+    state = _make_posteriogram_state(in_dim=4)
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(monkeypatch, post, dict(NET_SPEC))
+
+    # Patch librosa.resample so we don't actually need librosa for the math.
+    import phonological_posteriogram.phone_model as pm
+
+    resample_calls = []
+
+    class FakeLibrosa:
+        @staticmethod
+        def resample(y, *, orig_sr, target_sr):
+            resample_calls.append((orig_sr, target_sr, len(y)))
+            return np.zeros(int(len(y) * target_sr / orig_sr), dtype=np.float32)
+
+    # The `import librosa` inside _coerce_waveform sees this module's
+    # sys.modules entry.
+    monkeypatch.setitem(__import__("sys").modules, "librosa", FakeLibrosa())
+    monkeypatch.setattr(
+        model, "extract_features",
+        lambda w: np.zeros((5, 4), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        model, "segmenter",
+        lambda overrides=None: type("S", (), {
+            "segment": lambda self, f, w, **k: np.array([])
+        })(),
+    )
+
+    waveform = np.zeros(8000, dtype=np.float32)
+    with pytest.warns(UserWarning, match="resampling"):
+        model.recognize(waveform, sr=8000)
+    assert resample_calls == [(8000, NET_SPEC["sr"], 8000)]
+
+    # Matching sr does NOT resample and does NOT warn.
+    resample_calls.clear()
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # any warning would raise
+        model.recognize(waveform, sr=NET_SPEC["sr"])
+    assert resample_calls == []
+
+
+def test_phone_model_recognize_ignores_sr_when_path_supplied(monkeypatch, tmp_path):
+    """``sr=`` is meaningless when ``audio`` is a path; emit a warning."""
+    state = _make_posteriogram_state(in_dim=4)
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(monkeypatch, post, dict(NET_SPEC))
+
+    monkeypatch.setattr(
+        PhoneModel, "load_audio",
+        lambda self, p: np.zeros(NET_SPEC["sr"], dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        model, "extract_features",
+        lambda w: np.zeros((5, 4), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        model, "segmenter",
+        lambda overrides=None: type("S", (), {
+            "segment": lambda self, f, w, **k: np.array([])
+        })(),
+    )
+
+    path = tmp_path / "f.wav"
+    with pytest.warns(UserWarning, match="ignored when `audio` is a file path"):
+        model.recognize(path, sr=8000)
+
+
+def test_phone_model_segmenter_hparam_override(monkeypatch):
     """The point of the refactor: building a Segmenter with different
     hparams is cheap and shares the (expensive) posteriogram weights."""
-    model = PhoneModel(_make_posteriogram(), net_spec=dict(NET_SPEC))
+    model = _make_phone_model(monkeypatch, _make_posteriogram(), dict(NET_SPEC))
     seg_a = model.segmenter()
     seg_b = model.segmenter({"drop_k": 0})
 
@@ -465,17 +856,111 @@ def test_evaluator_batch_aggregates_micro_and_macro():
     assert agg["total_segments"] == 2
 
 
-def test_evaluator_demo_runs():
-    """The CLI demo at the bottom of evaluation.py runs end-to-end."""
-    from phonological_posteriogram import evaluation
+def test_per_token_level_edit_distance():
+    """PER is Levenshtein over label TOKENS (compound labels like 'eɪ' are
+    one token), divided by reference length."""
+    from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
 
-    # Free-mode demo — exercises pretty_print(); rich is optional.
-    evaluation._demo([])
-    evaluation._demo(["--forced"])
+    e = PhoneRecognitionEvaluator(skip_labels=())  # don't skip anything
+    # Identical → 0.
+    assert e.per(["p", "eɪ", "t"], ["p", "eɪ", "t"]) == pytest.approx(0.0)
+    # Single substitution among 3 ref tokens → 1/3.
+    assert e.per(["b", "eɪ", "t"], ["p", "eɪ", "t"]) == pytest.approx(1 / 3)
+    # Compound diphthong is ONE token: substituting eɪ→aɪ is 1 edit, not 2.
+    assert e.per(["p", "aɪ", "t"], ["p", "eɪ", "t"]) == pytest.approx(1 / 3)
+    # Empty reference → 0 (defined by convention).
+    assert e.per(["p"], []) == 0.0
 
 
-def test_training_evaluate_helpers():
-    """_gt_units sorts by min; _pred_units pads with 0 and audio_duration."""
+def test_per_pfer_skip_silence_by_default():
+    """Silence "_" is dropped from both sides before scoring."""
+    from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
+
+    e = PhoneRecognitionEvaluator()  # default skip_labels = {"_"}
+    # With "_" dropped, both sequences are just ["p", "t"] → PER = 0.
+    assert e.per(["_", "p", "_", "t"], ["p", "t", "_"]) == pytest.approx(0.0)
+
+
+def test_per_pfer_batch_micro_averaged():
+    """Batch aggregation is micro-averaged: total distance / total ref len."""
+    from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
+
+    e = PhoneRecognitionEvaluator(skip_labels=())
+    # u1: 1 sub in 3 → 1/3 PER (would give 0.333 if averaged).
+    # u2: 0 errors in 5 → 0 PER.
+    # Micro: total errors = 1, total ref = 8 → 1/8 = 0.125.
+    pred = {"u1": ["p", "b", "t"], "u2": ["a", "b", "c", "d", "e"]}
+    gt = {"u1": ["p", "eɪ", "t"], "u2": ["a", "b", "c", "d", "e"]}
+
+    # Bypass PFER (panphon) by clearing the panphon-using path: just call
+    # per() per utterance, since evaluate_batch also invokes pfer().
+    assert e.per(pred["u1"], gt["u1"]) == pytest.approx(1 / 3)
+    assert e.per(pred["u2"], gt["u2"]) == pytest.approx(0.0)
+
+
+def test_pfer_uses_panphon(monkeypatch):
+    """PFER calls panphon.feature_edit_distance and divides by ref length."""
+    from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
+
+    e = PhoneRecognitionEvaluator(skip_labels=())
+
+    class FakeDist:
+        def feature_edit_distance(self, s1, s2):
+            # Return a fixed cost regardless of input — we only care that
+            # PFER wires up to this function and normalizes by ref length.
+            return 1.5
+
+    e._dist = FakeDist()  # pre-populate the lazy panphon attribute
+    # 3 ref tokens, cost 1.5 → PFER = 0.5.
+    assert e.pfer(["p", "eɪ", "t"], ["p", "eɪ", "t"]) == pytest.approx(0.5)
+
+
+def test_phone_recognition_evaluator_accepts_segmentation_units():
+    """Accepts list[SegmentationUnit] in addition to list[str]."""
+    from phonological_posteriogram.evaluation import (
+        PhoneRecognitionEvaluator,
+        SegmentationUnit,
+    )
+
+    e = PhoneRecognitionEvaluator(skip_labels=())
+    pred_units = [
+        SegmentationUnit(0.0, 0.1, "p"),
+        SegmentationUnit(0.1, 0.2, "t"),
+    ]
+    ref_units = [
+        SegmentationUnit(0.0, 0.1, "p"),
+        SegmentationUnit(0.1, 0.2, "t"),
+    ]
+    assert e.per(pred_units, ref_units) == pytest.approx(0.0)
+
+
+def test_phone_recognition_evaluator_batch(monkeypatch):
+    """evaluate_batch micro-averages PER and PFER across utterances."""
+    from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
+
+    e = PhoneRecognitionEvaluator(skip_labels=())
+
+    class FakeDist:
+        def feature_edit_distance(self, s1, s2):
+            return 2.0  # constant per-utterance feature cost
+
+    e._dist = FakeDist()
+
+    pred = {"u1": ["p", "b", "t"], "u2": ["a", "b"]}
+    gt = {"u1": ["p", "eɪ", "t"], "u2": ["a", "b"]}
+    result = e.evaluate_batch(pred, gt)
+
+    # Total PER errors = 1 + 0 = 1; total ref = 3 + 2 = 5; PER = 0.2.
+    assert result["per"] == pytest.approx(0.2)
+    # Total PFER cost = 2 + 2 = 4; total ref = 5; PFER = 0.8.
+    assert result["pfer"] == pytest.approx(0.8)
+    assert result["n_utterances"] == 2
+    assert result["total_ref_phones"] == 5
+
+
+def test_training_evaluate_gt_units_sorted():
+    """_gt_units sorts segments by min so evaluation is order-insensitive
+    to the input CSV row order."""
     pd = pytest.importorskip("pandas")
     ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
 
@@ -491,23 +976,135 @@ def test_training_evaluate_helpers():
     assert [u.label for u in units] == ["a", "b", "c"]
     assert [u.start for u in units] == [0.0, 0.1, 0.2]
 
-    pred_units = ev._pred_units(np.array([0.1, 0.2]), audio_duration=0.5)
-    assert len(pred_units) == 3
-    assert pred_units[0].start == 0.0 and pred_units[0].end == pytest.approx(0.1)
-    assert pred_units[-1].end == pytest.approx(0.5)
+
+class _FakePost:
+    """Stub posteriogram object with the .project method evaluate.py uses."""
+
+    featnames = ["speech+", "a+", "b+"]
+
+    def project(self, feats, view="ipa", act="sigmoid"):
+        return np.zeros((len(feats), 3), dtype=np.float32)
+
+
+class _FakeRecognizerForEval:
+    """Tiles whatever boundaries it's given, labeling segments a/b/c...
+
+    Returns frame-based ``(start_frame, end_frame, label)`` triples — the
+    same shape as the real ``Recognizer.recognize``. Frame→time conversion
+    is the caller's job (typically via ``model.frame_to_time``).
+    """
+
+    LABELS = ["a", "b", "c", "d"]
+
+    def recognize(self, posteriogram, boundaries, **kw):
+        T = len(posteriogram)
+        bs = np.unique(
+            np.concatenate(
+                [np.asarray([0]), np.asarray(boundaries, dtype=int), np.asarray([T])]
+            )
+        )
+        return [
+            (int(bs[i]), int(bs[i + 1]), self.LABELS[i % len(self.LABELS)])
+            for i in range(len(bs) - 1)
+        ]
+
+
+class _FakeRecogEval:
+    """Stub PhoneRecognitionEvaluator so tests don't pay the real
+    panphon.distance.Distance() construction + feature_edit_distance cost."""
+
+    def __init__(self, *_, **__):
+        pass
+
+    def evaluate_batch(self, predictions, ground_truth):
+        return {
+            "per": 0.0,
+            "pfer": 0.0,
+            "n_utterances": sum(1 for k in ground_truth if k in predictions),
+            "total_ref_phones": sum(len(g) for g in ground_truth.values()),
+        }
+
+
+def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
+    """A model stub with all the methods evaluate.py / tune.py call.
+
+    `n_frames` controls the feature/posteriogram length, which in turn
+    determines the last predicted segment's end (via frame_to_time).
+    `bad_paths` is a collection of substrings; ``load_audio`` on a path
+    matching one raises ``FileNotFoundError`` (so we can exercise the
+    error-handling branch).
+
+    Mirrors the new API: ``recognize(audio, *, sr, lang, phoible_id,
+    phoneme, vocab)`` returns ``List[SegmentationUnit]`` in seconds; the
+    embedded recognizer is an attribute (not a factory) and itself returns
+    frame-based triples.
+    """
+    from phonological_posteriogram.evaluation import SegmentationUnit
+
+    def _frame_to_time(idxs):
+        return np.asarray(idxs, dtype=float) * 0.02
+
+    class FakeModel:
+        net_spec = {"sr": 16000, "frame_shift": 320}
+        posteriogram = _FakePost()
+        hparams = {"snap_silence": True}
+        recognizer = _FakeRecognizerForEval()
+
+        def load_audio(self, path):
+            if any(bad in str(path) for bad in bad_paths):
+                raise FileNotFoundError(path)
+            return np.zeros(int(0.30 * self.net_spec["sr"]), dtype=np.float32)
+
+        def extract_features(self, x):
+            return np.zeros((n_frames, 4), dtype=np.float32)
+
+        def frame_to_time(self, idxs):
+            return _frame_to_time(idxs)
+
+        def recognize(
+            self, audio, *, sr=None, lang=None, phoible_id=None,
+            phoneme=False, vocab=None,
+        ):
+            if isinstance(audio, (str, Path)):
+                waveform = self.load_audio(audio)
+            else:
+                waveform = np.asarray(audio, dtype=np.float32)
+            posteriogram = self.posteriogram.project(
+                self.extract_features(waveform)
+            )
+            triples = self.recognizer.recognize(
+                posteriogram,
+                np.asarray(internal_boundaries, dtype=int),
+                lang=lang, phoible_id=phoible_id, phoneme=phoneme, vocab=vocab,
+            )
+            if not triples:
+                return []
+            starts = self.frame_to_time(np.array([t[0] for t in triples]))
+            ends = self.frame_to_time(np.array([t[1] for t in triples]))
+            return [
+                SegmentationUnit(
+                    float(starts[i]), float(ends[i]), triples[i][2]
+                )
+                for i in range(len(triples))
+            ]
+
+    return FakeModel()
 
 
 def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
     """Run training/evaluate.py against a stubbed model + tiny CSV.
 
-    Patches `PhoneModel.from_pretrained` and `librosa.load` so no HF
-    download or real audio is needed. Verifies the script produces a
-    sensible aggregated result.
+    Verifies that boundary metrics (SegmentationEvaluator) and recognition
+    metrics (PhoneRecognitionEvaluator) both flow through the script's
+    pipeline and end up in the merged results dict.
     """
     pd = pytest.importorskip("pandas")
     ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
 
     csv_path = tmp_path / "fake.csv"
+    # GT segments at [0,0.10), [0.10,0.20), [0.20,0.30). With our fake
+    # model's frame_to_time = idx * 0.02, that corresponds to internal
+    # boundaries at frames 5 and 10 (segment edges 0, 5, 10, 15).
     pd.DataFrame(
         {
             "audio_path": ["fake.wav"] * 3,
@@ -518,25 +1115,14 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
         }
     ).to_csv(csv_path, index=False)
 
-    class FakeModel:
-        net_spec = {"sr": 16000, "frame_shift": 320}
-
-        def segment_seconds(self, waveform, **_):
-            # Predict exactly the interior GT boundaries (perfect score).
-            return np.array([0.10, 0.20], dtype=float)
-
+    # 15 frames at 0.02s/frame → last segment ends at 0.30s, matching GT.
+    fake_model = _make_fake_eval_model(internal_boundaries=[5, 10], n_frames=15)
     monkeypatch.setattr(
         ev.PhoneModel, "from_pretrained",
-        classmethod(lambda cls, *a, **kw: FakeModel()),
+        classmethod(lambda cls, *a, **kw: fake_model),
     )
-    monkeypatch.setattr(
-        ev.librosa,
-        "load",
-        lambda path, sr=None, mono=True: (
-            np.zeros(int(0.30 * sr), dtype=np.float32),
-            sr,
-        ),
-    )
+    # Stub out the panphon-using PhoneRecognitionEvaluator for speed.
+    monkeypatch.setattr(ev, "PhoneRecognitionEvaluator", _FakeRecogEval)
 
     args = ev._get_args(
         [
@@ -546,8 +1132,12 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
         ]
     )
     results = ev.run(args)
+    # Boundary metrics
     assert results["f1"] == pytest.approx(1.0, abs=1e-5)
     assert results["total_segments"] == 1
+    # Recognition metrics merged into the same dict
+    assert results["per"] == 0.0
+    assert results["pfer"] == 0.0
 
 
 def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
@@ -567,23 +1157,14 @@ def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
         }
     ).to_csv(csv_path, index=False)
 
-    class FakeModel:
-        net_spec = {"sr": 16000, "frame_shift": 320}
-
-        def segment_seconds(self, waveform, **_):
-            return np.array([0.05], dtype=float)
-
+    fake_model = _make_fake_eval_model(
+        internal_boundaries=[15], bad_paths=("bad.wav",)
+    )
     monkeypatch.setattr(
         ev.PhoneModel, "from_pretrained",
-        classmethod(lambda cls, *a, **kw: FakeModel()),
+        classmethod(lambda cls, *a, **kw: fake_model),
     )
-
-    def fake_load(path, sr=None, mono=True):
-        if "bad.wav" in str(path):
-            raise FileNotFoundError(path)
-        return np.zeros(int(0.10 * sr), dtype=np.float32), sr
-
-    monkeypatch.setattr(ev.librosa, "load", fake_load)
+    monkeypatch.setattr(ev, "PhoneRecognitionEvaluator", _FakeRecogEval)
 
     args = ev._get_args(
         ["--model", "ignored", "--dataset_csv", str(csv_path)]
@@ -682,13 +1263,6 @@ def test_training_train_requires_features_attrs(tmp_path):
 
 def test_training_train_end_to_end(tmp_path):
     """Fit on a synthetic features pkl, save, and reload via from_pretrained."""
-    try:
-        import panphon  # noqa: F401
-    except (ImportError, TypeError) as e:
-        # panphon >=0.22 uses PEP 604 unions and needs Python 3.10+; on 3.9
-        # the import raises TypeError, not ImportError, so importorskip
-        # alone wouldn't catch it.
-        pytest.skip(f"panphon unavailable: {e}")
     train_mod = pytest.importorskip(
         "phonological_posteriogram.training.train"
     )
@@ -736,6 +1310,7 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
             "max": [0.1, 0.1],
             "ipa": ["a", "b"],
             "split": ["test", "test"],
+            "language": ["eng", "eng"],
         }
     ).to_csv(csv_path, index=False)
 
@@ -751,17 +1326,17 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
         )
     )
 
-    model = PhoneModel(_make_posteriogram(in_dim=4), net_spec=dict(NET_SPEC))
+    model = _make_phone_model(
+        monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC)
+    )
     monkeypatch.setattr(
         tune.PhoneModel, "from_pretrained",
         classmethod(lambda cls, *a, **kw: model),
     )
     monkeypatch.setattr(
-        tune.librosa,
-        "load",
-        lambda path, sr=None, mono=True: (
-            np.zeros(int(0.3 * sr), dtype=np.float32),
-            sr,
+        PhoneModel, "load_audio",
+        lambda self, path: np.zeros(
+            int(0.3 * self.net_spec["sr"]), dtype=np.float32
         ),
     )
 
@@ -774,6 +1349,12 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
         return rng.normal(size=(30, 4)).astype(np.float32)
 
     monkeypatch.setattr(model, "extract_features", fake_extract)
+    # Swap in the fake recognizer (attribute, not factory) so the sweep
+    # doesn't pay the real Recognizer's panphon-aware logic.
+    model.recognizer = _FakeRecognizerForEval()
+    # Stub PhoneRecognitionEvaluator so the sweep doesn't pay the real
+    # panphon.distance.Distance() construction cost.
+    monkeypatch.setattr(tune, "PhoneRecognitionEvaluator", _FakeRecogEval)
 
     args = tune._get_args(
         [
@@ -789,3 +1370,158 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
     # Results are ranked best-first.
     scores = [r["score"] for r in results]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_tune_known_lang_kwargs_resolves_per_utterance(monkeypatch):
+    """Each row's `language` (an ISO 639-3 code) maps to a phoible_id."""
+    pd = pytest.importorskip("pandas")
+    tune = pytest.importorskip("phonological_posteriogram.training.tune")
+
+    df = pd.DataFrame(
+        {
+            "audio_path": ["a.wav", "b.wav", "c.wav"],
+            "min": [0.0, 0.0, 0.0],
+            "max": [0.1, 0.1, 0.1],
+            "ipa": ["a", "b", "c"],
+            "language": ["xxA", "xxB", "xxC"],
+        }
+    )
+    fake_resolve = {"xxA": 11, "xxB": 22}  # xxC fails
+
+    def _fake_resolve(lang):
+        if lang in fake_resolve:
+            return fake_resolve[lang]
+        raise ValueError(f"unknown {lang}")
+
+    monkeypatch.setattr(tune, "_resolve_lang", _fake_resolve)
+
+    with pytest.warns(UserWarning, match="Could not resolve"):
+        out = tune._resolve_known_lang_kwargs(
+            df, ["a.wav", "b.wav", "c.wav"]
+        )
+    assert out["a.wav"]["phoible_id"] == 11
+    assert out["b.wav"]["phoible_id"] == 22
+    # Unresolved language → no constraint for that utterance.
+    assert out["c.wav"]["phoible_id"] is None
+    assert out["c.wav"]["lang"] is None
+
+
+def test_tune_known_lang_kwargs_requires_language_column():
+    """tune.py refuses to run on a CSV without a `language` column."""
+    pd = pytest.importorskip("pandas")
+    tune = pytest.importorskip("phonological_posteriogram.training.tune")
+
+    df = pd.DataFrame(
+        {
+            "audio_path": ["a.wav"],
+            "min": [0.0],
+            "max": [0.1],
+            "ipa": ["a"],
+        }
+    )
+    with pytest.raises(ValueError, match="`language` column"):
+        tune._resolve_known_lang_kwargs(df, ["a.wav"])
+
+
+def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
+    """--metric=known_per sorts ascending (lower is better) and both
+    known_per and unknown_per appear in the per-candidate metrics dict."""
+    import json
+
+    pd = pytest.importorskip("pandas")
+    tune = pytest.importorskip("phonological_posteriogram.training.tune")
+
+    csv_path = tmp_path / "d.csv"
+    pd.DataFrame(
+        {
+            "audio_path": ["a.wav"],
+            "min": [0.0],
+            "max": [0.1],
+            "ipa": ["a"],
+            "split": ["test"],
+            "language": ["eng"],
+        }
+    ).to_csv(csv_path, index=False)
+    grid_path = tmp_path / "grid.json"
+    grid_path.write_text(json.dumps([{"drop_k": 0}, {"drop_k": 1}]))
+
+    model = _make_phone_model(
+        monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC)
+    )
+    monkeypatch.setattr(
+        tune.PhoneModel, "from_pretrained",
+        classmethod(lambda cls, *a, **kw: model),
+    )
+    monkeypatch.setattr(
+        PhoneModel, "load_audio",
+        lambda self, path: np.zeros(
+            int(0.3 * self.net_spec["sr"]), dtype=np.float32
+        ),
+    )
+    rng = np.random.default_rng(0)
+    monkeypatch.setattr(
+        model, "extract_features",
+        lambda w: rng.normal(size=(30, 4)).astype(np.float32),
+    )
+    model.recognizer = _FakeRecognizerForEval()
+
+    # Each candidate triggers TWO evaluate_batch calls (known + unknown
+    # recognizer pass). Give each candidate a distinct known PER and a
+    # distinct unknown PER so the test can verify both end up in the dict.
+    sequence = iter([
+        (0.5, 0.7),  # cand 0: (known_per, unknown_per)
+        (0.1, 0.3),  # cand 1: (known_per, unknown_per)
+    ])
+    current = {"known": None, "unknown": None, "toggle": 0}
+
+    class _OrderedRecogEval:
+        def __init__(self, *_, **__): pass
+        def evaluate_batch(self, p, g):
+            if current["toggle"] == 0:
+                current["known"], current["unknown"] = next(sequence)
+                v = current["known"]
+            else:
+                v = current["unknown"]
+            current["toggle"] ^= 1
+            return {
+                "per": v, "pfer": 0.0,
+                "n_utterances": len(g),
+                "total_ref_phones": sum(len(vv) for vv in g.values()),
+            }
+
+    monkeypatch.setattr(tune, "PhoneRecognitionEvaluator", _OrderedRecogEval)
+
+    args = tune._get_args(
+        [
+            "--model", "ignored",
+            "--dataset_csv", str(csv_path),
+            "--hparams_json", str(grid_path),
+            "--metric", "known_per",
+        ]
+    )
+    results = tune.run(args)
+    # Lower known_per wins → candidate index 1 (known_per=0.1) ranks first.
+    assert results[0]["index"] == 1
+    assert results[0]["score"] == pytest.approx(0.1)
+    # Both known_ and unknown_ metrics are present per candidate.
+    for r in results:
+        assert "known_per" in r["metrics"] and "unknown_per" in r["metrics"]
+        assert "known_pfer" in r["metrics"] and "unknown_pfer" in r["metrics"]
+    # And they're distinct on at least one candidate (sanity).
+    assert any(
+        r["metrics"]["known_per"] != r["metrics"]["unknown_per"]
+        for r in results
+    )
+
+
+def test_tune_cli_rejects_removed_args():
+    """The pre-refactor --lang/--phoible_id/--phoneme/--vocab args are gone."""
+    tune = pytest.importorskip("phonological_posteriogram.training.tune")
+
+    base = ["--model", "x", "--dataset_csv", "y", "--hparams_json", "z"]
+    for removed in ("--lang", "--phoible_id", "--phoneme", "--vocab"):
+        argv = base + (
+            [removed, "English"] if removed != "--phoneme" else [removed]
+        )
+        with pytest.raises(SystemExit):
+            tune._get_args(argv)

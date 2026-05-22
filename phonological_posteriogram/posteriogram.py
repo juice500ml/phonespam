@@ -17,6 +17,7 @@ refitting these weights.
 from __future__ import annotations
 
 import numpy as np
+import panphon
 
 VIEWS = ("ipa", "l_1", "r_1")
 
@@ -65,8 +66,6 @@ class _VectorView:
 
     @classmethod
     def fit(cls, df, vocab, group_col, filter_features=True):
-        import panphon
-
         ft = panphon.FeatureTable()
         featnames, featmap = cls._prep_featmap(vocab, ft)
         pos_vecs, zero_vecs, scales, biases = cls._calc_phnvectors(

@@ -170,6 +170,7 @@ def _prepare_timit(timit_path: Path):
                             "timit_phn": phn,
                             "ipa": ipa,
                             "split": split.lower(),
+                            "language": "eng",
                         }
                     )
 

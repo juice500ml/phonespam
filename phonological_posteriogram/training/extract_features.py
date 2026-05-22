@@ -139,7 +139,10 @@ def run(args):
     df.attrs["encoder_layer"] = args.layer_index
     df.attrs["pool"] = args.pool
     df.attrs["sr"] = args.sr
-    df.attrs["frame_shift"] = SSL_FRAME_SHIFT
+    df.attrs["frame_shift"] = encoder.stride
+    # Lets PhoneModel.frame_to_time be model-accurate without re-loading
+    # the SSL encoder.
+    df.attrs["k_eff_samples"] = encoder.k_eff_samples
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_pickle(args.output_path)

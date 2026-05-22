@@ -83,6 +83,10 @@ def run(args):
         "frame_shift": int(attrs["frame_shift"]),
         "sr": int(attrs["sr"]),
     }
+    # Optional: lets PhoneModel.frame_to_time be model-accurate at
+    # inference without re-loading the SSL encoder.
+    if "k_eff_samples" in attrs:
+        net_spec["k_eff_samples"] = int(attrs["k_eff_samples"])
     hparams = Segmenter.default_hparams()
     hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
 

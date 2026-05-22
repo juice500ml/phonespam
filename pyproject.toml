@@ -37,8 +37,6 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 
-# Inference-only dependencies. Loads pretrained models via .from_pretrained()
-# and runs the underlying SSL encoder on raw audio.
 dependencies = [
     "numpy>=1.21",
     "scipy>=1.7",
@@ -48,16 +46,12 @@ dependencies = [
     "transformers>=4.30",
     "huggingface-hub>=0.19",
     "librosa>=0.10",
+    "panphon>=0.20",
 ]
 
 [project.optional-dependencies]
-# Adds dataset preparation + SSL feature dumping used during training.
-# The training pipeline is just: run SSL inference, dump features, fit on
-# them (similar in spirit to k-means on SSL features), so the extra deps
-# are dataset/labeling utilities and panphon for IPA featuralization.
 train = [
     "praatio>=6.0",
-    "panphon>=0.20",
     "tqdm>=4.64",
 ]
 dev = [
@@ -77,6 +71,9 @@ Issues = "https://github.com/juice500ml/phonological-posteriogram/issues"
 
 [tool.setuptools]
 packages = ["phonological_posteriogram", "phonological_posteriogram.training"]
+
+[tool.setuptools.package-data]
+phonological_posteriogram = ["data/phoible.csv"]
 
 [tool.setuptools_scm]
 write_to = "phonological_posteriogram/_version.py"

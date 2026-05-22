@@ -1,4 +1,16 @@
-"""Command-line interface for phonological-posteriogram inference."""
+"""Command-line interface for phonological-posteriogram inference.
+
+Loads a pretrained :class:`PhoneModel` and runs end-to-end phone
+recognition on one audio file, printing one ``start_sec end_sec label``
+line per predicted phone segment.
+
+Constrain the output vocabulary at most one of three ways:
+
+- ``--vocab phone1,phone2,...`` — explicit phone list.
+- ``--lang Korean`` / ``--phoible_id 423`` — pick a Phoible inventory.
+  Add ``--phoneme`` to use that inventory's abstract Phoneme set rather
+  than its surface Allophones.
+"""
 
 from __future__ import annotations
 
@@ -11,19 +23,17 @@ import numpy as np
 from .phone_model import PhoneModel
 
 
-def _load_audio(path: Path, sr: int) -> np.ndarray:
-    import librosa
-
-    y, _ = librosa.load(str(path), sr=sr, mono=True)
-    return y.astype(np.float32)
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run a pretrained phonological-posteriogram model on an audio file.",
+        description=(
+            "Run a pretrained phonological-posteriogram model on an audio "
+            "file and print per-segment phone predictions."
+        ),
     )
     parser.add_argument(
-        "audio", type=Path, help="Path to an audio file (any librosa-readable format)."
+        "audio",
+        type=Path,
+        help="Path to an audio file (any librosa-readable format).",
     )
     parser.add_argument(
         "--model",
@@ -33,37 +43,76 @@ def main(argv=None):
     parser.add_argument(
         "--output",
         type=Path,
-        help="Optional path to write boundary times (in seconds) as a text file.",
+        help=(
+            "Optional path to write the per-segment predictions as a "
+            "tab-separated file (start_sec, end_sec, label)."
+        ),
     )
     parser.add_argument(
         "--posteriogram",
         type=Path,
         help="Optional path to write the per-frame posteriogram as a .npy file.",
     )
-    parser.add_argument("--device", default="cpu", help="Torch device (cpu, cuda:0, ...).")
     parser.add_argument(
-        "--no-snap-silence",
+        "--vocab",
+        default=None,
+        help=(
+            "Comma-separated list of phones to constrain the recognizer's "
+            "output vocabulary (e.g. 'p,t,k,a,i,u'). Mutually exclusive with "
+            "--lang / --phoible_id."
+        ),
+    )
+    parser.add_argument(
+        "--lang",
+        default=None,
+        help=(
+            "Constrain the recognizer's vocab to one Phoible language "
+            "(LanguageName / ISO 639-3 / Glottocode)."
+        ),
+    )
+    parser.add_argument(
+        "--phoible_id",
+        type=int,
+        default=None,
+        help="Constrain the recognizer's vocab to one Phoible InventoryID.",
+    )
+    parser.add_argument(
+        "--phoneme",
         action="store_true",
-        help="Disable silence-snapping of boundary predictions.",
+        help=(
+            "Use the inventory's abstract Phoneme set rather than the "
+            "surface Allophones (requires --lang or --phoible_id)."
+        ),
+    )
+    parser.add_argument(
+        "--device", default="cpu", help="Torch device (cpu, cuda:0, ...)."
     )
     args = parser.parse_args(argv)
 
     model = PhoneModel.from_pretrained(args.model, device=args.device)
-    waveform = _load_audio(args.audio, sr=model.net_spec["sr"])
 
-    boundary_seconds = model.segment_seconds(
-        waveform, snap_silence=not args.no_snap_silence
+    vocab = (
+        [p for p in args.vocab.split(",") if p] if args.vocab is not None else None
     )
 
+    units = model.recognize(
+        args.audio,
+        lang=args.lang,
+        phoible_id=args.phoible_id,
+        phoneme=args.phoneme,
+        vocab=vocab,
+    )
+
+    lines = [f"{u.start:.4f}\t{u.end:.4f}\t{u.label}" for u in units]
     if args.output is not None:
-        np.savetxt(args.output, boundary_seconds, fmt="%.4f")
+        args.output.write_text("\n".join(lines) + ("\n" if lines else ""))
     else:
-        for t in boundary_seconds:
-            print(f"{t:.4f}")
+        for line in lines:
+            print(line)
 
     if args.posteriogram is not None:
-        post = model.posteriogram(waveform)
-        np.save(args.posteriogram, post)
+        waveform = model.load_audio(args.audio)
+        np.save(args.posteriogram, model.compute_posteriogram(waveform))
 
 
 if __name__ == "__main__":
