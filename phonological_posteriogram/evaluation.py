@@ -231,7 +231,7 @@ class SegmentationEvaluator:
         times = [u.start for u in units] + [units[-1].end]
         if self.strip_endpoints and len(times) >= 2:
             times = times[1:-1]
-        return times
+        return np.array(times)
 
     def _get_boundary_metrics(
         self,
