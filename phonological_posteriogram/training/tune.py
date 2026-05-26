@@ -168,11 +168,11 @@ def _extract_feature_cache(model, df, audio_paths):
 def _triples_to_units(model, triples):
     """Wrap frame-based (start, end, label) triples from
     :meth:`Recognizer.recognize` into seconds-based SegmentationUnits via
-    the model's accurate frame→time map."""
+    the encoder's frame→time map."""
     if not triples:
         return []
-    starts = model.frame_to_time(np.array([t[0] for t in triples]))
-    ends = model.frame_to_time(np.array([t[1] for t in triples]))
+    starts = model.encoder.frame_to_time(np.array([t[0] for t in triples]))
+    ends = model.encoder.frame_to_time(np.array([t[1] for t in triples]))
     return [
         SegmentationUnit(float(starts[i]), float(ends[i]), triples[i][2])
         for i in range(len(triples))

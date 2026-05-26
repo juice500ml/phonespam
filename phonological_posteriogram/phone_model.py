@@ -14,7 +14,7 @@ A saved model is a single artifact file (``torch.save``'d dict)::
     {
         "posteriogram": {...},  # PhonologicalPosteriogram.to_state()
         "hparams":      {...},  # the tuned/blessed algorithm config
-        "net":          {"hf_repo", "encoder_layer", "frame_shift", "sr"},
+        "net":          {"hf_repo", "encoder_layer", "sr"},
     }
 """
 
@@ -152,7 +152,6 @@ class PhoneModel:
         return Segmenter(
             self.posteriogram,
             sr=self.net_spec["sr"],
-            frame_shift=self.net_spec["frame_shift"],
             hparams=hparams,
         )
 
@@ -233,7 +232,7 @@ class PhoneModel:
                 constraint (mutually exclusive with ``vocab``).
 
         Returns a list of :class:`SegmentationUnit` with start/end in
-        seconds (model-accurate via :meth:`frame_to_time`).
+        seconds (via :meth:`SSLEncoder.frame_to_time`).
         """
         waveform = self._coerce_waveform(audio, sr)
         feats = self.extract_features(waveform)
@@ -251,38 +250,14 @@ class PhoneModel:
         )
         if not triples:
             return []
-        starts = self.frame_to_time(np.array([t[0] for t in triples]))
-        ends = self.frame_to_time(np.array([t[1] for t in triples]))
+        starts = self.encoder.frame_to_time(np.array([t[0] for t in triples]))
+        ends = self.encoder.frame_to_time(np.array([t[1] for t in triples]))
         return [
             SegmentationUnit(
                 float(starts[i]), float(ends[i]), triples[i][2]
             )
             for i in range(len(triples))
         ]
-
-    def frame_to_time(self, frame_indices) -> np.ndarray:
-        """Map feature-frame indices to the time (seconds) at the *center*
-        of each frame's receptive-field window.
-
-        For a no-padding strided conv stack, frame ``idx`` is computed from
-        input ``[idx*stride, idx*stride + window)``, so its center is
-        ``idx*stride + window/2`` (``window_samples`` = receptive field,
-        recorded at training time). This is the acoustically correct location
-        for a boundary at frame ``idx``; the frame's right edge or a half-hop
-        offset bias every boundary late.
-
-        Falls back to the hop-midpoint ``(idx + 0.5)*stride / sr`` for
-        artifacts saved before ``window_samples`` existed (off by only
-        ``(window - stride)/2`` ≈ a few ms, vs the much larger right-edge
-        bias).
-        """
-        idx = np.asarray(frame_indices, dtype=np.float64)
-        stride = self.net_spec["frame_shift"]
-        sr = self.net_spec["sr"]
-        window = self.net_spec.get("window_samples")
-        if window is None:
-            return (idx + 0.5) * stride / sr
-        return (idx * stride + window / 2.0) / sr
 
 
 def _resolve_artifact_path(

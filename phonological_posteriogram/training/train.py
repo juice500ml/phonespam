@@ -1,10 +1,10 @@
 """Fit a PhonologicalPosteriogram on per-phone SSL features and save a model.
 
 Reads a pickled DataFrame produced by ``training/extract_features.py`` (its
-``df.attrs`` carries ``hf_repo``, ``encoder_layer``, ``pool``, ``sr``,
-``frame_shift``), fits the three phonological-vector views and the two
-forward/backward regressors, wraps them in a :class:`PhoneModel`, and saves
-the artifact so it can be reloaded with ``PhoneModel.from_pretrained``.
+``df.attrs`` carries ``hf_repo``, ``encoder_layer``, ``pool``, ``sr``), fits
+the three phonological-vector views and the two forward/backward regressors,
+wraps them in a :class:`PhoneModel`, and saves the artifact so it can be
+reloaded with ``PhoneModel.from_pretrained``.
 
 Run as::
 
@@ -25,7 +25,7 @@ from ..phone_model import PhoneModel
 from ..posteriogram import PhonologicalPosteriogram
 from ..segmenter import Segmenter
 
-REQUIRED_ATTRS = ("hf_repo", "encoder_layer", "sr", "frame_shift")
+REQUIRED_ATTRS = ("hf_repo", "encoder_layer", "sr")
 
 
 def _get_args(argv=None):
@@ -80,16 +80,8 @@ def run(args):
     net_spec = {
         "hf_repo": attrs["hf_repo"],
         "encoder_layer": int(attrs["encoder_layer"]),
-        "frame_shift": int(attrs["frame_shift"]),
         "sr": int(attrs["sr"]),
     }
-    # Optional: lets PhoneModel.frame_to_time be model-accurate at
-    # inference without re-loading the SSL encoder.
-    if "k_eff_samples" in attrs:
-        net_spec["k_eff_samples"] = int(attrs["k_eff_samples"])
-    # Receptive-field window (samples) -> frame center = idx*stride + window/2.
-    if "window_samples" in attrs:
-        net_spec["window_samples"] = int(attrs["window_samples"])
     hparams = Segmenter.default_hparams()
     hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
 

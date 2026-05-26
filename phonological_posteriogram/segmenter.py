@@ -215,9 +215,9 @@ def _shift_signal(signal, shift_frames):
 class Segmenter:
     """Phone-boundary algorithm over a fitted ``PhonologicalPosteriogram``.
 
-    Holds no trained weights — only ``hparams`` plus the encoder's ``sr`` and
-    ``frame_shift`` (needed by the mel-SVF auxiliary signal and frame↔time
-    conversion). Constructing one is cheap, so hparam sweeps don't refit.
+    Holds no trained weights — only ``hparams`` plus the encoder's ``sr``
+    (needed by the mel-SVF auxiliary signal). Constructing one is cheap, so
+    hparam sweeps don't refit.
     """
 
     # A "signal spec" is a dict {"name", "kwargs", "shift"}. ``combined_signals``
@@ -268,10 +268,9 @@ class Segmenter:
             "mel_frame_shift_ms": 10,
         }
 
-    def __init__(self, posteriogram, *, sr, frame_shift, hparams=None):
+    def __init__(self, posteriogram, *, sr, hparams=None):
         self.posteriogram = posteriogram
         self.sr = int(sr)
-        self.frame_shift = int(frame_shift)
         # Merge onto defaults so a partial dict (or an artifact saved before
         # a new hparam was added) still yields a complete config.
         self.hparams = {**self.default_hparams(), **(hparams or {})}
@@ -284,7 +283,6 @@ class Segmenter:
         return self.__class__(
             self.posteriogram,
             sr=self.sr,
-            frame_shift=self.frame_shift,
             hparams={**self.hparams, **hparams_override},
         )
 

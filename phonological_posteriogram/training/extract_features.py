@@ -139,13 +139,6 @@ def run(args):
     df.attrs["encoder_layer"] = args.layer_index
     df.attrs["pool"] = args.pool
     df.attrs["sr"] = args.sr
-    df.attrs["frame_shift"] = encoder.stride
-    # Lets PhoneModel.frame_to_time be model-accurate without re-loading
-    # the SSL encoder.
-    df.attrs["k_eff_samples"] = encoder.k_eff_samples
-    # Receptive-field window (samples); used to place each frame's center at
-    # ``idx*stride + window/2`` in PhoneModel.frame_to_time.
-    df.attrs["window_samples"] = encoder.window_samples
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_pickle(args.output_path)

@@ -15,7 +15,6 @@ from phonological_posteriogram.segmenter import Segmenter
 NET_SPEC = {
     "hf_repo": "microsoft/wavlm-large",
     "encoder_layer": -1,
-    "frame_shift": 320,
     "sr": 16000,
 }
 
@@ -174,8 +173,7 @@ def test_posteriogram_project_activation():
 
 def test_segmenter_construction():
     post = _make_posteriogram()
-    seg = Segmenter(post, sr=16000, frame_shift=320)
-    assert seg.frame_shift == 320
+    seg = Segmenter(post, sr=16000)
     assert seg.sr == 16000
     assert seg.posteriogram is post
 
@@ -206,43 +204,27 @@ def test_from_pretrained_accepts_file_path(tmp_path, monkeypatch):
     artifact = _make_artifact()
     torch.save(artifact, tmp_path / "custom.pt")
     model = PhoneModel.from_pretrained(tmp_path / "custom.pt")
-    assert model.segmenter().frame_shift == 320
+    assert model.segmenter().sr == 16000
 
 
-def test_phone_model_frame_to_time_center(monkeypatch):
-    """PhoneModel.frame_to_time returns the center of each frame's
-    receptive-field window: ``idx*stride + window/2`` samples. For the
-    wav2vec2/WavLM conv feature encoder, stride=320 and window=400."""
-    # Mirror what extract_features.py records.
-    stride = 320
-    window = 400  # wav2vec2/WavLM conv feature-encoder receptive field
-    model = _make_phone_model(
-        monkeypatch,
-        _make_posteriogram(),
-        net_spec={
-            **NET_SPEC,
-            "window_samples": window,
-            "frame_shift": stride,
-        },
-    )
-    sr = NET_SPEC["sr"]
+def test_ssl_encoder_frame_to_time():
+    """SSLEncoder.frame_to_time is ``idx*stride_size/sr`` and time_to_frame is
+    its round-trip inverse. The pre-pad in __call__ centers each frame on its
+    stride window, so no receptive-field term is needed. PhoneModel reuses this
+    map directly (no PhoneModel.frame_to_time)."""
+    from phonological_posteriogram.features import SSLEncoder
+
+    enc = SSLEncoder.__new__(SSLEncoder)  # bypass the model download
+    enc.stride_size = 320
+    enc.sr = 16000
 
     for idx in (0, 4, 10, 50):
-        expected = (idx * stride + window / 2.0) / sr
         np.testing.assert_allclose(
-            model.frame_to_time(np.array([idx])), [expected], atol=1e-6
+            enc.frame_to_time(np.array([idx])), [idx * 320 / 16000], atol=1e-6
         )
-
-    # Backward compat: artifacts without window_samples fall back to the
-    # hop-midpoint formula `(idx + 0.5) * stride / sr`.
-    legacy = _make_phone_model(
-        monkeypatch,
-        _make_posteriogram(),
-        net_spec={**NET_SPEC, "frame_shift": stride},  # no window_samples
-    )
-    np.testing.assert_allclose(
-        legacy.frame_to_time(np.array([4])), [(4 + 0.5) * stride / sr]
-    )
+    # time_to_frame is the round-trip inverse.
+    for idx in (0, 3, 17, 99):
+        assert int(enc.time_to_frame(np.array([idx * 320 / 16000]))[0]) == idx
 
 
 def test_recognizer_phoneme_without_lang_raises():
@@ -478,7 +460,7 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(
-        monkeypatch, post, {**NET_SPEC, "k_eff_samples": 320}
+        monkeypatch, post, NET_SPEC
     )
 
     extract_calls = {"n": 0}
@@ -520,7 +502,7 @@ def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
     state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(
-        monkeypatch, post, {**NET_SPEC, "k_eff_samples": 320}
+        monkeypatch, post, NET_SPEC
     )
 
     load_calls = []
@@ -647,7 +629,7 @@ def test_segmenter_hparams_merge_onto_defaults():
     """A partial hparams dict still yields a complete config (missing keys
     filled from default_hparams)."""
     post = _make_posteriogram()
-    seg = Segmenter(post, sr=16000, frame_shift=320, hparams={"drop_k": 1})
+    seg = Segmenter(post, sr=16000, hparams={"drop_k": 1})
     assert seg.hparams["drop_k"] == 1
     assert seg.hparams["activation"] == "none"  # filled from defaults
     assert "combined_signals" in seg.hparams
@@ -660,7 +642,6 @@ def test_segmenter_combines_duplicate_signal_specs():
     seg = Segmenter(
         post,
         sr=16000,
-        frame_shift=320,
         hparams={
             **Segmenter.default_hparams(),
             "combined_signals": [
@@ -683,7 +664,6 @@ def test_segmenter_combine_method_hparam(combine_method):
     seg = Segmenter(
         post,
         sr=16000,
-        frame_shift=320,
         hparams={"combine_method": combine_method, "snap_silence": False},
     )
     feats = np.random.default_rng(1).normal(size=(30, 4)).astype(np.float32)
@@ -724,7 +704,6 @@ def test_segmenter_distance_hparam(distance):
     seg = Segmenter(
         post,
         sr=16000,
-        frame_shift=320,
         hparams={"distance": distance, "snap_silence": False},
     )
     feats = np.random.default_rng(2).normal(size=(30, 4)).astype(np.float32)
@@ -1179,7 +1158,7 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
         return np.asarray(idxs, dtype=float) * 0.02
 
     class FakeModel:
-        net_spec = {"sr": 16000, "frame_shift": 320}
+        net_spec = {"sr": 16000}
         posteriogram = _FakePost()
         hparams = {"snap_silence": True}
         recognizer = _FakeRecognizerForEval()
@@ -1366,7 +1345,6 @@ def _make_synthetic_features_pkl(tmp_path):
     df.attrs["encoder_layer"] = -1
     df.attrs["pool"] = "center"
     df.attrs["sr"] = 16000
-    df.attrs["frame_shift"] = 320
 
     pkl_path = tmp_path / "feats.pkl"
     df.to_pickle(pkl_path)
@@ -1420,7 +1398,6 @@ def test_training_train_end_to_end(tmp_path):
     reloaded = PhoneModel.from_pretrained(out_dir)
     assert reloaded.net_spec["hf_repo"] == "microsoft/wavlm-large"
     assert reloaded.net_spec["sr"] == 16000
-    assert reloaded.net_spec["frame_shift"] == 320
     # mel_frame_shift_ms now lives in the algorithm hparams, not net_spec.
     assert reloaded.hparams["mel_frame_shift_ms"] == 10
     # Silence detection lives on the posteriogram (silence+ channel); the
