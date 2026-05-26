@@ -49,6 +49,19 @@ class SSLEncoder:
             ).item()
         )
         self.k_eff_samples = probe_samples - probe_frames * self.stride
+        # Receptive field (window) of the conv feature encoder, in input
+        # samples. For a no-padding strided conv stack, output frame ``idx``
+        # depends on input ``[idx*stride, idx*stride + window)``, so the
+        # frame's temporal *center* is ``idx*stride + window/2``. Computed from
+        # the conv config (a function of architecture only, not the audio):
+        # W = 1 + sum_i (kernel_i - 1) * prod_{j<i} stride_j.
+        rf, pref = 1, 1
+        for k, s in zip(
+            self.model.config.conv_kernel, self.model.config.conv_stride
+        ):
+            rf += (int(k) - 1) * pref
+            pref *= int(s)
+        self.window_samples = int(rf)
 
     @torch.inference_mode()
     def __call__(self, waveform: np.ndarray) -> np.ndarray:
@@ -90,15 +103,17 @@ class SSLEncoder:
         return np.clip(out, 0, None).astype(np.int64)
 
     def frame_to_time(self, frame_indices: np.ndarray) -> np.ndarray:
-        """Map feature-frame indices (0-indexed) back to times in seconds.
+        """Map feature-frame indices (0-indexed) to the time (seconds) at
+        the *center* of each frame's receptive-field window.
 
-        Inverse of :meth:`time_to_frame` in the sense that
-        ``frame_to_time(time_to_frame(t) - 1) == t`` (within integer
-        rounding) — i.e. ``frame_to_time(idx)`` is the time at which the
-        frame at index ``idx`` first exists. Avoids the ~1-frame bias of
-        the naive ``idx * stride / sr`` formula by including the conv
-        stack's effective kernel offset.
+        For a no-padding strided conv stack, frame ``idx`` is computed from
+        input samples ``[idx*stride, idx*stride + window)``, so its temporal
+        center is ``idx*stride + window/2`` (window == receptive field). This
+        is the acoustically correct location for a boundary detected at frame
+        ``idx`` — unlike the frame's right edge or a half-*hop* offset, which
+        bias every boundary late by ``(window - stride)/2`` and ``stride/2``
+        respectively.
         """
         idx = np.asarray(frame_indices, dtype=np.float64)
-        samples = (idx + 1) * self.stride + self.k_eff_samples
+        samples = idx * self.stride + self.window_samples / 2.0
         return samples / self.sr

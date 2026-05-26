@@ -30,7 +30,7 @@ def test_public_api_exposed():
 def _make_view_state(in_dim=4, n_feat=3, featnames=None, pos_vecs=None):
     """State dict for one PhonologicalPosteriogram view."""
     if featnames is None:
-        featnames = ["speech+"] + [f"f{i}" for i in range(n_feat - 1)]
+        featnames = ["silence+"] + [f"f{i}" for i in range(n_feat - 1)]
     if pos_vecs is None:
         pos_vecs = np.zeros((n_feat, in_dim), dtype=np.float32)
     return {
@@ -107,10 +107,10 @@ def test_predict_silence_mask_requires_speech_plus():
 
 
 def test_predict_silence_mask_uses_speech_plus():
-    """predict_silence_mask thresholds the speech+ posteriogram channel."""
+    """predict_silence_mask thresholds the silence+ posteriogram channel."""
     in_dim = 4
-    # Make speech+ unmistakable: pos_vec is a strong direction; everything
-    # else is zero. Then a feat aligned with speech+ projects to ~1 there.
+    # Make silence+ unmistakable: pos_vec is a strong direction; everything
+    # else is zero. Then a feat aligned with silence+ projects to ~1 there.
     pos = np.zeros((3, in_dim), dtype=np.float32)
     pos[0] = np.array([10.0, 0, 0, 0], dtype=np.float32)
     post = _make_posteriogram(in_dim=in_dim, ipa_pos_vecs=pos)
@@ -137,8 +137,8 @@ def test_predict_silence_mask_threshold():
     post = _make_posteriogram(in_dim=in_dim, ipa_pos_vecs=pos)
 
     feats = np.array([[1.0, 0, 0, 0]], dtype=np.float32)
-    # Weak alignment -> speech+ projection sigmoid ≈ 0.525, between
-    # thresholds. Silence is `speech+ > threshold`, so:
+    # Weak alignment -> silence+ projection sigmoid ≈ 0.525, between
+    # thresholds. Silence is `silence+ > threshold`, so:
     #   threshold=0.5 → 0.525 > 0.5 → silence (True)
     #   threshold=0.6 → 0.525 > 0.6 → not silence (False)
     assert post.predict_silence_mask(feats, threshold=0.5)[0]
@@ -209,43 +209,39 @@ def test_from_pretrained_accepts_file_path(tmp_path, monkeypatch):
     assert model.segmenter().frame_shift == 320
 
 
-def test_phone_model_frame_to_time_roundtrip(monkeypatch):
-    """PhoneModel.frame_to_time is the model-accurate inverse of
-    SSLEncoder.time_to_frame: for the wav2vec2 conv stack,
-    output_lengths(L) = L/stride - 1 in the typical regime, so
-    k_eff_samples == stride and the round-trip is exact."""
+def test_phone_model_frame_to_time_center(monkeypatch):
+    """PhoneModel.frame_to_time returns the center of each frame's
+    receptive-field window: ``idx*stride + window/2`` samples. For the
+    wav2vec2/WavLM conv feature encoder, stride=320 and window=400."""
     # Mirror what extract_features.py records.
     stride = 320
-    k_eff = stride  # wav2vec2-family
+    window = 400  # wav2vec2/WavLM conv feature-encoder receptive field
     model = _make_phone_model(
         monkeypatch,
         _make_posteriogram(),
-        net_spec={**NET_SPEC, "k_eff_samples": k_eff, "frame_shift": stride},
+        net_spec={
+            **NET_SPEC,
+            "window_samples": window,
+            "frame_shift": stride,
+        },
     )
     sr = NET_SPEC["sr"]
 
-    # For wav2vec2 the relation output_lengths(L) = L/stride - 1 is exact
-    # in the large-L regime: indices [0..L/stride - 2] are valid, so the
-    # last-valid-index for time t is (t*sr)/stride - 2 and that index's
-    # emergence time is exactly t.
-    for t in (0.04, 0.10, 0.50, 1.00):
-        count = int(t * sr) // stride - 1   # output_lengths
-        last_idx = count - 1
+    for idx in (0, 4, 10, 50):
+        expected = (idx * stride + window / 2.0) / sr
         np.testing.assert_allclose(
-            model.frame_to_time(np.array([last_idx])),
-            [t],
-            atol=1e-6,
+            model.frame_to_time(np.array([idx])), [expected], atol=1e-6
         )
 
-    # Backward compat: artifacts without k_eff_samples fall back to the
-    # naive `idx * stride / sr` formula.
+    # Backward compat: artifacts without window_samples fall back to the
+    # hop-midpoint formula `(idx + 0.5) * stride / sr`.
     legacy = _make_phone_model(
         monkeypatch,
         _make_posteriogram(),
-        net_spec={**NET_SPEC, "frame_shift": stride},  # no k_eff_samples
+        net_spec={**NET_SPEC, "frame_shift": stride},  # no window_samples
     )
     np.testing.assert_allclose(
-        legacy.frame_to_time(np.array([4])), [4 * stride / sr]
+        legacy.frame_to_time(np.array([4])), [(4 + 0.5) * stride / sr]
     )
 
 
@@ -285,21 +281,54 @@ def test_recognizer_resolves_unknown_language():
         _resolve_lang("zzz_no_such_language")
 
 
-def test_recognizer_resolves_ambiguous_language_picks_smallest_id():
-    """A language with multiple inventories picks the smallest InventoryID
-    (with a warning pointing at phoible.org for context)."""
+def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
+    """When no candidate inventory is dialect-free, the smallest InventoryID
+    is used (with a warning pointing at phoible.org for context)."""
+    import pandas as pd
     from phonological_posteriogram.recognizer import _phoible, _resolve_lang
 
     df = _phoible()
-    # Find a LanguageName that has >1 InventoryID (Phoible has many).
+    inv_dialect = df.drop_duplicates("InventoryID").set_index(
+        "InventoryID"
+    )["SpecificDialect"]
     counts = df.groupby("LanguageName")["InventoryID"].nunique()
-    ambiguous = counts[counts > 1]
-    if ambiguous.empty:
-        pytest.skip("no ambiguous language names in this Phoible snapshot")
-    name = ambiguous.index[0]
-    expected = int(
-        df[df["LanguageName"] == name]["InventoryID"].min()
-    )
+    # A multi-inventory language where NONE is dialect-free (NaN) → smallest.
+    name = None
+    for cand in counts[counts > 1].index:
+        ids = df[df["LanguageName"] == cand]["InventoryID"].unique()
+        if not any(pd.isna(inv_dialect[i]) for i in ids):
+            name = cand
+            break
+    if name is None:
+        pytest.skip("no all-dialected multi-inventory language in this snapshot")
+    expected = int(df[df["LanguageName"] == name]["InventoryID"].min())
+    with pytest.warns(UserWarning, match="https://phoible.org/languages/"):
+        resolved = _resolve_lang(name)
+    assert resolved == expected
+
+
+def test_recognizer_ambiguous_language_prefers_dialect_free():
+    """When one candidate inventory is dialect-free (SpecificDialect NaN),
+    it is preferred over lower-numbered dialected inventories."""
+    import pandas as pd
+    from phonological_posteriogram.recognizer import _phoible, _resolve_lang
+
+    df = _phoible()
+    inv_dialect = df.drop_duplicates("InventoryID").set_index(
+        "InventoryID"
+    )["SpecificDialect"]
+    counts = df.groupby("LanguageName")["InventoryID"].nunique()
+    # A multi-inventory language with exactly one dialect-free (NaN) inventory
+    # that is NOT the smallest ID — proves dialect-free beats smallest-ID.
+    name = expected = None
+    for cand in counts[counts > 1].index:
+        ids = sorted(int(i) for i in df[df["LanguageName"] == cand]["InventoryID"].unique())
+        free = [i for i in ids if pd.isna(inv_dialect[i])]
+        if len(free) == 1 and free[0] != ids[0]:
+            name, expected = cand, free[0]
+            break
+    if name is None:
+        pytest.skip("no suitable dialect-free multi-inventory language found")
     with pytest.warns(UserWarning, match="https://phoible.org/languages/"):
         resolved = _resolve_lang(name)
     assert resolved == expected
@@ -390,12 +419,40 @@ def test_recognizer_vocab_unknown_phones_are_filtered(recwarn):
 
 
 def test_recognizer_vocab_all_unknown_raises():
-    """A vocab of only-unknown phones raises (nothing to constrain to)."""
+    """A vocab whose phones decompose to *no* panphon segments raises."""
     from phonological_posteriogram.recognizer import _validate_vocab
 
     pytest.importorskip("panphon")
+    # Pure punctuation/digits: ipa_segs() yields nothing for either token,
+    # so there is no segment left to constrain to.
     with pytest.raises(ValueError, match="no panphon-known phones"):
-        _validate_vocab(("zzz1_unknown_a", "zzz2_unknown_b"))
+        _validate_vocab(("123", "!!!"))
+
+
+def test_filter_panphon_known_decomposes_multisegment_phones():
+    """Multi-segment Phoible phones (ts, mb, ...) decompose into their
+    component panphon segments instead of being dropped wholesale; the
+    result is de-duplicated."""
+    from phonological_posteriogram.recognizer import _filter_panphon_known
+
+    pytest.importorskip("panphon")
+    # "ts" -> t,s ; "mb" -> m,b ; "b" -> b (b is a dup, dropped).
+    out = _filter_panphon_known(("ts", "mb", "b"), context="test")
+    assert out == ("t", "s", "m", "b")  # order preserved, "b" not duplicated
+
+
+def test_filter_panphon_known_keeps_recognized_parts_and_warns():
+    """A phone that doesn't round-trip still contributes the segments
+    panphon *did* recognize, but a warning flags the partial match."""
+    from phonological_posteriogram.recognizer import _filter_panphon_known
+
+    pytest.importorskip("panphon")
+    # "k̚" (unreleased k) loses the ◌̚ diacritic in ipa_segs → "k"; the
+    # phone is flagged (didn't round-trip) but its recognized "k" is kept.
+    with pytest.warns(UserWarning, match="not.*recognized by panphon"):
+        out = _filter_panphon_known(("p", "k̚"), context="test")
+    assert "p" in out
+    assert "k" in out  # the recognized portion survives
 
 
 def test_phone_model_embeds_recognizer(monkeypatch):
@@ -446,7 +503,7 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     assert extract_calls["n"] == 1  # encoder runs exactly once
     assert len(units) == 3
     assert all(isinstance(u, SegmentationUnit) for u in units)
-    # Posteriogram is high on speech+ everywhere → every segment labels "_".
+    # Posteriogram is high on silence+ everywhere → every segment labels "_".
     assert [u.label for u in units] == ["_", "_", "_"]
     starts = [u.start for u in units]
     ends = [u.end for u in units]
@@ -1057,7 +1114,7 @@ def test_training_evaluate_gt_units_sorted():
 class _FakePost:
     """Stub posteriogram object with the .project method evaluate.py uses."""
 
-    featnames = ["speech+", "a+", "b+"]
+    featnames = ["silence+", "a+", "b+"]
 
     def project(self, feats, view="ipa", act="sigmoid"):
         return np.zeros((len(feats), 3), dtype=np.float32)
@@ -1366,9 +1423,9 @@ def test_training_train_end_to_end(tmp_path):
     assert reloaded.net_spec["frame_shift"] == 320
     # mel_frame_shift_ms now lives in the algorithm hparams, not net_spec.
     assert reloaded.hparams["mel_frame_shift_ms"] == 10
-    # Silence detection lives on the posteriogram (speech+ channel); the
+    # Silence detection lives on the posteriogram (silence+ channel); the
     # fitted vocab includes "_", so the feature is present.
-    assert "speech+" in reloaded.posteriogram.featnames
+    assert "silence+" in reloaded.posteriogram.featnames
 
 
 def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):

@@ -261,21 +261,28 @@ class PhoneModel:
         ]
 
     def frame_to_time(self, frame_indices) -> np.ndarray:
-        """Map feature-frame indices to times (seconds).
+        """Map feature-frame indices to the time (seconds) at the *center*
+        of each frame's receptive-field window.
 
-        Model-accurate inverse of the encoder's ``time_to_frame``. Uses the
-        conv stack's ``k_eff_samples`` stored in ``net_spec`` (recorded at
-        training time); falls back to the naive ``idx * stride / sr`` for
-        artifacts saved before that key existed (off by ~1 frame from the
-        model-accurate value).
+        For a no-padding strided conv stack, frame ``idx`` is computed from
+        input ``[idx*stride, idx*stride + window)``, so its center is
+        ``idx*stride + window/2`` (``window_samples`` = receptive field,
+        recorded at training time). This is the acoustically correct location
+        for a boundary at frame ``idx``; the frame's right edge or a half-hop
+        offset bias every boundary late.
+
+        Falls back to the hop-midpoint ``(idx + 0.5)*stride / sr`` for
+        artifacts saved before ``window_samples`` existed (off by only
+        ``(window - stride)/2`` ≈ a few ms, vs the much larger right-edge
+        bias).
         """
         idx = np.asarray(frame_indices, dtype=np.float64)
         stride = self.net_spec["frame_shift"]
         sr = self.net_spec["sr"]
-        k_eff = self.net_spec.get("k_eff_samples")
-        if k_eff is None:
-            return idx * stride / sr
-        return ((idx + 1) * stride + k_eff) / sr
+        window = self.net_spec.get("window_samples")
+        if window is None:
+            return (idx + 0.5) * stride / sr
+        return (idx * stride + window / 2.0) / sr
 
 
 def _resolve_artifact_path(

@@ -143,6 +143,9 @@ def run(args):
     # Lets PhoneModel.frame_to_time be model-accurate without re-loading
     # the SSL encoder.
     df.attrs["k_eff_samples"] = encoder.k_eff_samples
+    # Receptive-field window (samples); used to place each frame's center at
+    # ``idx*stride + window/2`` in PhoneModel.frame_to_time.
+    df.attrs["window_samples"] = encoder.window_samples
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_pickle(args.output_path)

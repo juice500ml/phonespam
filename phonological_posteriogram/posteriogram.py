@@ -86,7 +86,7 @@ class _VectorView:
     @staticmethod
     def _prep_featmap(vocab, ft):
         names = (
-            ["speech+"]
+            ["silence+"]
             + [f"{n}+" for n in ft.fts("a").names]
             + [f"{n}-" for n in ft.fts("a").names]
         )
@@ -105,14 +105,14 @@ class _VectorView:
 
     @staticmethod
     def _split_phns(featname, featnames, featmap):
-        speech_plus_index = featnames.index("speech+")
-        if featname == "speech+":
-            pos_phns = {p for p, v in featmap.items() if v[speech_plus_index] == 1}
-            zero_phns = {p for p, v in featmap.items() if v[speech_plus_index] == 0}
+        silence_plus_index = featnames.index("silence+")
+        if featname == "silence+":
+            pos_phns = {p for p, v in featmap.items() if v[silence_plus_index] == 1}
+            zero_phns = {p for p, v in featmap.items() if v[silence_plus_index] == 0}
         else:
             index = featnames.index(featname)
-            pos_phns = {p for p, v in featmap.items() if (v[index] == 1) & (v[speech_plus_index] == 0)}
-            zero_phns = {p for p, v in featmap.items() if (v[index] == 0) & (v[speech_plus_index] == 0)}
+            pos_phns = {p for p, v in featmap.items() if (v[index] == 1) & (v[silence_plus_index] == 0)}
+            zero_phns = {p for p, v in featmap.items() if (v[index] == 0) & (v[silence_plus_index] == 0)}
         return pos_phns, zero_phns
 
     @classmethod
@@ -158,11 +158,11 @@ class _VectorView:
         """Drop dead/degenerate features.
 
         Dead: no phones in the + or 0 class. Degenerate: the +/0 partition
-        is identical to ``speech+`` (i.e. just a silence detector). ``speech+``
+        is identical to ``silence+`` (i.e. just a silence detector). ``silence+``
         itself is always kept.
         """
-        speech_pos, speech_zero = self._split_phns(
-            "speech+", self.featnames, self.featmap
+        silence_pos, silence_zero = self._split_phns(
+            "silence+", self.featnames, self.featmap
         )
         keep = []
         for i, name in enumerate(self.featnames):
@@ -172,9 +172,9 @@ class _VectorView:
             if len(pos_phns) == 0 or len(zero_phns) == 0:
                 continue
             if (
-                name != "speech+"
-                and pos_phns == speech_pos
-                and zero_phns == speech_zero
+                name != "silence+"
+                and pos_phns == silence_pos
+                and zero_phns == silence_zero
             ):
                 continue
             keep.append(i)
@@ -296,19 +296,19 @@ class PhonologicalPosteriogram:
         return self.views[view].project(feats, act=act)
 
     def predict_silence_mask(self, feats, threshold=0.5):
-        """Per-frame silence mask from the ``speech+`` posteriogram channel.
+        """Per-frame silence mask from the ``silence+`` posteriogram channel.
 
-        ``speech+`` is positive only for the silence token ``"_"`` in
+        ``silence+`` is positive only for the silence token ``"_"`` in
         :meth:`_VectorView._prep_featmap`, so its projected (sigmoid) value
         is HIGH for silence-like frames. Returns a boolean array with
         single-frame gaps between silent frames filled in.
         """
-        if "speech+" not in self.featnames:
+        if "silence+" not in self.featnames:
             raise ValueError(
-                "posteriogram has no 'speech+' feature; the training vocab "
+                "posteriogram has no 'silence+' feature; the training vocab "
                 "must include the silence token '_'."
             )
-        idx = self.featnames.index("speech+")
+        idx = self.featnames.index("silence+")
         # The threshold is calibrated against the (0, 1) sigmoid output.
         proj = self.project(feats, view="ipa", act="sigmoid")
         return _fill_gaps(proj[:, idx] > threshold)

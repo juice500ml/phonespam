@@ -87,6 +87,9 @@ def run(args):
     # inference without re-loading the SSL encoder.
     if "k_eff_samples" in attrs:
         net_spec["k_eff_samples"] = int(attrs["k_eff_samples"])
+    # Receptive-field window (samples) -> frame center = idx*stride + window/2.
+    if "window_samples" in attrs:
+        net_spec["window_samples"] = int(attrs["window_samples"])
     hparams = Segmenter.default_hparams()
     hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
 

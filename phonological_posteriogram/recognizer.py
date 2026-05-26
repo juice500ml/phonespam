@@ -30,6 +30,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import panphon
+import pandas as pd
 
 _PHOIBLE_CSV = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "phoible.csv"
@@ -39,8 +40,6 @@ _PHOIBLE_CSV = os.path.join(
 @functools.lru_cache(maxsize=1)
 def _phoible():
     """Lazily load (and cache) the packaged Phoible inventory CSV."""
-    import pandas as pd
-
     df = pd.read_csv(
         _PHOIBLE_CSV,
         keep_default_na=False,
@@ -98,20 +97,51 @@ def _validate_vocab(vocab: Tuple[str, ...]) -> Tuple[str, ...]:
 def _filter_panphon_known(
     phones: Sequence[str], *, context: str
 ) -> Tuple[str, ...]:
-    """Drop phones panphon doesn't recognize; warn (once) about the drops."""
+    """Reduce a phone list to the panphon segments it's composed of.
+
+    Phoible sometimes spells a "phone" as several IPA segments (e.g. the
+    affricate ``ts`` -> ``t`` + ``s``, the prenasalized ``mb`` -> ``m`` +
+    ``b``). ``ft.ipa_segs(p)`` splits such a string into the panphon
+    segments it recognizes, silently dropping any characters it doesn't.
+
+    Every recognized segment is added to the vocabulary (a single known
+    segment is just a length-1 decomposition). A phone that does **not**
+    round-trip — ``"".join(ft.ipa_segs(p)) != p`` — had an unrecognized
+    character dropped; its recognized parts are still kept, but it's
+    collected for a warning so the caller knows something was lost.
+
+    Because multi-segment phones flatten to their parts, the same segment
+    can arrive from several phones, so the result is de-duplicated
+    (first-occurrence order preserved).
+    """
     ft = panphon.FeatureTable()
-    known, unknown = [], []
+    segments, unknown = [], []
     for p in phones:
-        (known if ft.seg_known(p) else unknown).append(p)
+        segs = ft.ipa_segs(p)
+        segments += segs
+        if "".join(segs) != p:
+            unknown.append(p)
     if unknown:
         preview = unknown[:10]
         warnings.warn(
-            f"Ignoring {len(unknown)} phone(s) not recognized by panphon "
-            f"for {context}: {preview}"
+            f"Ignoring {len(unknown)} phone(s) with segment(s) not "
+            f"recognized by panphon for {context}: {preview}"
             f"{'...' if len(unknown) > len(preview) else ''}",
             stacklevel=3,
         )
-    return tuple(known)
+    # De-dup while keeping first-occurrence order.
+    return tuple(dict.fromkeys(segments))
+
+
+def _inventory_dialect(series):
+    """An inventory's SpecificDialect (it's constant within an InventoryID).
+
+    Returns the first specified (non-NaN) value if there is one; otherwise
+    (the inventory has only NaN rows) returns the first index, which is NaN
+    — never a value borrowed from another inventory.
+    """
+    specified = series.dropna()
+    return specified.iloc[0] if not specified.empty else series.iloc[0]
 
 
 @functools.lru_cache(maxsize=None)
@@ -119,10 +149,12 @@ def _resolve_lang(lang: str) -> int:
     """Resolve a language name to a single Phoible InventoryID.
 
     Searches LanguageName, then ISO6393, then Glottocode (all
-    case-insensitive). When a language matches multiple inventories the
-    smallest InventoryID is picked (with a warning listing each candidate's
-    SpecificDialect so the caller can disambiguate); pass ``phoible_id=``
-    explicitly to override.
+    case-insensitive). When a language matches multiple inventories, the
+    **dialect-free** inventory (``SpecificDialect`` is NaN) is preferred —
+    it's the most generic representation of the language. If several are
+    dialect-free, the smallest such InventoryID wins; if none is, the
+    smallest InventoryID overall is used. A warning lists every candidate's
+    SpecificDialect; pass ``phoible_id=`` explicitly to override.
     """
     df = _phoible()
     target = str(lang).strip().lower()
@@ -132,28 +164,30 @@ def _resolve_lang(lang: str) -> int:
         if rows.empty:
             continue
         inv_ids = sorted(int(i) for i in rows["InventoryID"].unique())
-        if len(inv_ids) > 1:
-            glottocode = rows["Glottocode"].iloc[0]
-            dialect_per_id = {
-                int(rid): (
-                    str(rsub["SpecificDialect"].dropna().iloc[0])
-                    if rsub["SpecificDialect"].notna().any()
-                    else "(no SpecificDialect)"
-                )
-                for rid, rsub in rows.groupby("InventoryID")
-            }
-            id_dialect_lines = ", ".join(
-                f"{i}: {dialect_per_id[i]!r}" for i in inv_ids
-            )
-            warnings.warn(
-                f"Phoible has {len(inv_ids)} inventories for {lang!r} "
-                f"({id_dialect_lines}); picking the smallest "
-                f"({inv_ids[0]}, dialect {dialect_per_id[inv_ids[0]]!r}). "
-                f"Pass `phoible_id=...` to override. "
-                f"See https://phoible.org/languages/{glottocode}",
-                stacklevel=3,
-            )
-        return inv_ids[0]
+        if len(inv_ids) == 1:
+            return inv_ids[0]
+
+        glottocode = rows["Glottocode"].iloc[0]
+        dialect_per_id = {
+            int(rid): _inventory_dialect(rsub["SpecificDialect"])
+            for rid, rsub in rows.groupby("InventoryID")
+        }
+        # Prefer the dialect-free inventory (SpecificDialect is NaN). Among
+        # several dialect-free ones take the smallest InventoryID; if none
+        # is dialect-free, fall back to the smallest InventoryID overall.
+        dialect_free = [i for i in inv_ids if pd.isna(dialect_per_id[i])]
+        chosen = dialect_free[0] if dialect_free else inv_ids[0]
+        id_dialect_lines = ", ".join(
+            f"{i}: {dialect_per_id[i]!r}" for i in inv_ids
+        )
+        warnings.warn(
+            f"Phoible has {len(inv_ids)} inventories for {lang!r} "
+            f"({id_dialect_lines}); picking {chosen} "
+            f"(dialect {dialect_per_id[chosen]!r}). Pass `phoible_id=...` "
+            f"to override. See https://phoible.org/languages/{glottocode}",
+            stacklevel=3,
+        )
+        return chosen
     raise ValueError(
         f"Language {lang!r} not found in Phoible "
         "(LanguageName / ISO6393 / Glottocode)."
@@ -189,7 +223,7 @@ class Recognizer:
         ft = panphon.FeatureTable()
         panphon_names = ft.fts("a").names
         full_featnames = (
-            ["speech+"]
+            ["silence+"]
             + [f"{n}+" for n in panphon_names]
             + [f"{n}-" for n in panphon_names]
         )
