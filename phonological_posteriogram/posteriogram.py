@@ -105,9 +105,14 @@ class _VectorView:
 
     @staticmethod
     def _split_phns(featname, featnames, featmap):
-        index = featnames.index(featname)
-        pos_phns = {p for p, v in featmap.items() if v[index] == 1}
-        zero_phns = {p for p, v in featmap.items() if v[index] == 0}
+        speech_plus_index = featnames.index("speech+")
+        if featname == "speech+":
+            pos_phns = {p for p, v in featmap.items() if v[speech_plus_index] == 1}
+            zero_phns = {p for p, v in featmap.items() if v[speech_plus_index] == 0}
+        else:
+            index = featnames.index(featname)
+            pos_phns = {p for p, v in featmap.items() if (v[index] == 1) & (v[speech_plus_index] == 0)}
+            zero_phns = {p for p, v in featmap.items() if (v[index] == 0) & (v[speech_plus_index] == 0)}
         return pos_phns, zero_phns
 
     @classmethod

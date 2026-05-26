@@ -692,6 +692,83 @@ def test_normalize_signal_methods():
         _normalize_signal(sig, "bogus")
 
 
+def _phn_row(timit_phn, mn, mx, ipa, audio="u.wav"):
+    """Build a minimal pre-merge TIMIT row dict (matches _prepare_timit)."""
+    return {
+        "audio_path": audio,
+        "min": mn,
+        "max": mx,
+        "timit_phn": timit_phn,
+        "ipa": ipa,
+        "split": "test",
+        "language": "eng",
+    }
+
+
+def test_merge_stop_closures_merges_closure_into_release():
+    """A closure immediately before its release is folded into the release:
+    one segment spanning [closure.min, release.max], labeled as the release."""
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
+
+    rows = [
+        _phn_row("bcl", 0.00, 0.05, "b"),
+        _phn_row("b", 0.05, 0.10, "b"),
+        _phn_row("iy", 0.10, 0.20, "i"),
+    ]
+    out = prep._merge_stop_closures(rows)
+    assert [r["timit_phn"] for r in out] == ["b", "iy"]
+    # The merged release spans the closure's start through its own end.
+    assert out[0]["min"] == 0.00 and out[0]["max"] == 0.10
+    assert out[0]["ipa"] == "b"
+
+
+def test_merge_stop_closures_standalone_closure_falls_back_to_stop():
+    """A closure with no following release is kept and surfaces as the bare
+    stop (via TIMIT_TO_IPA), NOT dropped and NOT a distinct closure symbol."""
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
+
+    # bcl followed by a vowel (not its release /b/): stays on its own.
+    rows = [
+        _phn_row("bcl", 0.00, 0.05, "b"),
+        _phn_row("iy", 0.05, 0.15, "i"),
+    ]
+    out = prep._merge_stop_closures(rows)
+    assert [r["timit_phn"] for r in out] == ["bcl", "iy"]
+    # The lone closure keeps its own span and reads out as the stop "b".
+    assert out[0]["min"] == 0.00 and out[0]["max"] == 0.05
+    assert out[0]["ipa"] == "b"
+
+
+def test_merge_stop_closures_affricate_and_double_closure():
+    """Affricate closures (dcl→jh, tcl→ch) merge; a leading duplicate closure
+    stays standalone."""
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
+
+    rows = [
+        _phn_row("dcl", 0.00, 0.04, "d"),   # standalone (next is another dcl)
+        _phn_row("dcl", 0.04, 0.08, "d"),   # closure of the following jh
+        _phn_row("jh", 0.08, 0.15, "d͡ʒ"),
+    ]
+    out = prep._merge_stop_closures(rows)
+    assert [r["timit_phn"] for r in out] == ["dcl", "jh"]
+    # First dcl stays standalone → "d"; second dcl merged into jh.
+    assert out[0]["min"] == 0.00 and out[0]["max"] == 0.04 and out[0]["ipa"] == "d"
+    assert out[1]["min"] == 0.04 and out[1]["max"] == 0.15 and out[1]["ipa"] == "d͡ʒ"
+
+
+def test_merge_stop_closures_release_without_closure_unchanged():
+    """A release with no preceding closure is left untouched."""
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
+
+    rows = [
+        _phn_row("iy", 0.00, 0.10, "i"),
+        _phn_row("b", 0.10, 0.15, "b"),   # release, but prev is a vowel
+    ]
+    out = prep._merge_stop_closures(rows)
+    assert [r["timit_phn"] for r in out] == ["iy", "b"]
+    assert out[1]["min"] == 0.10  # not extended
+
+
 def test_add_phone_context_splits_diphthongs():
     """Diphthongs expand to their component phones for context lookup.
 

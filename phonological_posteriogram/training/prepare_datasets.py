@@ -30,12 +30,12 @@ TIMIT_TO_IPA = {
     # Vowels
     "iy": "i", "ih": "ɪ", "eh": "ɛ", "ae": "æ",
     "aa": "ɑ", "ah": "ʌ", "ao": "ɔ", "uh": "ʊ",
-    "uw": "u", "ux": "ʉ", "er": "ɝ", "ax": "ə",
-    "ix": "ɨ", "axr": "ɚ", "ax-h": "ə̯",
+    "uw": "u", "ux": "ʉ", "er": "ɜ˞", "ax": "ə",
+    "ix": "ɨ", "axr": "ə˞", "ax-h": "ə̥",
     # Diphthongs
     "ey": "eɪ", "aw": "aʊ", "ay": "aɪ", "oy": "ɔɪ", "ow": "oʊ",
     # Stop closures: will be dropped after being merged into the succeeding stop.
-    "bcl": "b", "dcl": "d", "gcl": "g",
+    "bcl": "b", "dcl": "d", "gcl": "ɡ",
     "pcl": "p", "tcl": "t", "kcl": "k",
     # Non-speech: kept as the silence token "_" so the segmenter sees silence
     # frames during training.
@@ -122,6 +122,38 @@ def _add_phone_context(df, n=5):
     return df
 
 
+def _merge_stop_closures(utt_rows):
+    """Fold each stop closure into the stop/affricate release after it.
+
+    TIMIT writes most stops and affricates as a *closure* interval (``bcl``,
+    ``dcl``, ...) immediately followed by a *release* (``b``, ``jh``, ...).
+    When that pair occurs, we merge them into a single segment spanning
+    ``[closure.min, release.max]``, labeled as the release, and drop the
+    closure row.
+
+    A closure that stands on its own — no matching release immediately after
+    it — is kept and falls back to the bare stop: ``TIMIT_TO_IPA`` already
+    maps e.g. ``"bcl" -> "b"``, so a lone closure surfaces as the stop, never
+    as a distinct closure symbol.
+
+    ``utt_rows`` must be time-ordered and belong to a single utterance.
+    """
+    merged = []
+    for row in utt_rows:
+        phn = row["timit_phn"]
+        if (
+            merged
+            and phn in TIMIT_CLOSURE_OF
+            and merged[-1]["timit_phn"] == TIMIT_CLOSURE_OF[phn]
+        ):
+            # Previous row is this release's closure: extend the release back
+            # over the closure's span and replace the closure row with it.
+            merged[-1] = {**row, "min": merged[-1]["min"]}
+        else:
+            merged.append(row)
+    return merged
+
+
 def _prepare_timit(timit_path: Path):
     """Read TIMIT directly off disk by globbing .WAV/.PHN file pairs.
 
@@ -130,49 +162,33 @@ def _prepare_timit(timit_path: Path):
 
     `timit_path` is the TIMIT root directory containing TRAIN/ and TEST/.
     Each .WAV file has a sibling .PHN file with `start stop phone` lines
-    (sample indices at 16 kHz).
+    (sample indices at 16 kHz). Each utterance is parsed in full, then its
+    stop closures are merged into the following release in a separate
+    utterance-wise pass (see :func:`_merge_stop_closures`).
     """
     rows = []
     for split in ("TRAIN", "TEST"):
         wav_paths = sorted(timit_path.glob(f"**/{split}/**/*.WAV"))
         for audio_path in tqdm(wav_paths, desc=f"TIMIT {split}"):
-            audio_path_str = str(audio_path)
             phn_path = audio_path.with_suffix(".PHN")
             if not phn_path.exists():
                 continue
+            utt_rows = []
             with open(phn_path) as f:
                 for line in f:
                     start_str, stop_str, phn = line.strip().split()
-                    start = int(start_str)
-                    stop = int(stop_str)
-                    ipa = TIMIT_TO_IPA[phn]
-
-                    # Stop closures (bcl, dcl, ...) get merged into the
-                    # succeeding stop by extending that stop's start time
-                    # backwards to the closure's start.
-                    # If the closure doesn't have a preceding stop,
-                    # set the closure as the stop itself.
-                    if phn in TIMIT_CLOSURE_OF:
-                        closure = TIMIT_CLOSURE_OF[phn]
-                        if (
-                            rows
-                            and rows[-1]["timit_phn"] == closure
-                            and rows[-1]["audio_path"] == audio_path_str
-                        ):
-                            start = int(rows[-1]["min"] * 16000)
-                            rows[-1]["ipa"] = None  # set to None to be dropped later
-
-                    rows.append(
+                    utt_rows.append(
                         {
-                            "audio_path": audio_path_str,
-                            "min": start / 16000,
-                            "max": stop / 16000,
+                            "audio_path": str(audio_path),
+                            "min": int(start_str) / 16000,
+                            "max": int(stop_str) / 16000,
                             "timit_phn": phn,
-                            "ipa": ipa,
+                            "ipa": TIMIT_TO_IPA[phn],
                             "split": split.lower(),
                             "language": "eng",
                         }
                     )
+            rows.extend(_merge_stop_closures(utt_rows))
 
     df = pd.DataFrame(rows)
     df = df[df.ipa.notna()].reset_index(drop=True)

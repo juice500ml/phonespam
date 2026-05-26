@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Union
 
 import numpy as np
+import librosa
 import torch
 
 from .evaluation import SegmentationUnit
@@ -163,8 +164,6 @@ class PhoneModel:
         Thin wrapper around ``librosa.load`` that locks in the conventions
         the model expects (mono, ``self.net_spec["sr"]``).
         """
-        import librosa
-
         y, _ = librosa.load(str(path), sr=self.net_spec["sr"], mono=True)
         return y.astype(np.float32)
 
