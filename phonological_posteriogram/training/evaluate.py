@@ -127,6 +127,17 @@ def _get_args(argv=None):
         default=None,
         help="Cap on number of utterances; useful for quick sanity checks.",
     )
+    parser.add_argument(
+        "--keep-endpoints",
+        dest="keep_endpoints",
+        action="store_true",
+        help=(
+            "Score the utterance start/end boundaries (frame 0 and frame T) "
+            "too. By default they are skipped: the recognizer always emits "
+            "them and the GT always tiles to them, so they are trivially "
+            "correct and would inflate the metrics."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -198,6 +209,7 @@ def run(args):
         tolerance_ms=args.tolerance_ms,
         forced=args.forced,
         match_mode=args.match_mode,
+        strip_endpoints=not args.keep_endpoints,
     )
     seg_results = seg_eval.evaluate_batch(
         predictions, ground_truth, symbols_dict=symbols_dict

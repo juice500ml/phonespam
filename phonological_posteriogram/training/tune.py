@@ -283,7 +283,10 @@ def run(args):
         raise RuntimeError("No utterances could be encoded; nothing to tune.")
 
     seg_evaluator = SegmentationEvaluator(
-        tolerance_ms=args.tolerance_ms, match_mode=args.match_mode
+        tolerance_ms=args.tolerance_ms,
+        match_mode=args.match_mode,
+        # Tune the same metric eval reports: skip the trivial 0/T endpoints.
+        strip_endpoints=True,
     )
     rec_evaluator = PhoneRecognitionEvaluator()
 

@@ -191,8 +191,6 @@ class PhoneModel:
                 f"expected rate ({target_sr} Hz); resampling.",
                 stacklevel=3,
             )
-            import librosa
-
             waveform = librosa.resample(
                 waveform, orig_sr=int(sr), target_sr=int(target_sr)
             ).astype(np.float32)
@@ -252,12 +250,15 @@ class PhoneModel:
             return []
         starts = self.encoder.frame_to_time(np.array([t[0] for t in triples]))
         ends = self.encoder.frame_to_time(np.array([t[1] for t in triples]))
-        return [
+        units = [
             SegmentationUnit(
                 float(starts[i]), float(ends[i]), triples[i][2]
             )
             for i in range(len(triples))
         ]
+        units[0].start = 0.0
+        units[-1].end = len(waveform) / self.net_spec["sr"]
+        return units
 
 
 def _resolve_artifact_path(

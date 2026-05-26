@@ -59,6 +59,13 @@ class SegmentationEvaluator:
             ``"lenient"`` (default): independent nearest-neighbour — every
             boundary counts as TP iff any counterpart lies within
             tolerance, with no exclusivity.
+        strip_endpoints: If True (default), drop each utterance's first and
+            last boundary (the start of the first segment and the end of the
+            last — i.e. frame 0 and frame T) before scoring. These are
+            trivially known (the recognizer always emits them and the GT
+            always tiles to them), so scoring them inflates the metrics.
+            Pass False to score the raw boundary set (e.g. when testing the
+            matching logic directly).
     """
 
     def __init__(
@@ -66,6 +73,7 @@ class SegmentationEvaluator:
         tolerance_ms: int = 20,
         forced: bool = False,
         match_mode: str = "lenient",
+        strip_endpoints: bool = True,
     ):
         if match_mode not in {"strict", "lenient"}:
             raise ValueError(
@@ -75,6 +83,7 @@ class SegmentationEvaluator:
         self._tol_eps = 1e-9  # Float-precision slack on the boundary check.
         self.forced = forced
         self.match_mode = match_mode
+        self.strip_endpoints = strip_endpoints
 
     def evaluate_boundaries(
         self,
@@ -119,11 +128,17 @@ class SegmentationEvaluator:
             precision_counter = self._greedy_match_count(gt_times, pred_times)
             recall_counter = self._greedy_match_count(pred_times, gt_times)
         else:
-            precision_counter = sum(
-                np.abs(gt_times - t).min() <= tol for t in pred_times
+            # Guard the per-query .min() against an empty reference array
+            # (possible once endpoints are stripped from a short utterance).
+            precision_counter = (
+                sum(np.abs(gt_times - t).min() <= tol for t in pred_times)
+                if len(gt_times)
+                else 0
             )
-            recall_counter = sum(
-                np.abs(pred_times - t).min() <= tol for t in gt_times
+            recall_counter = (
+                sum(np.abs(pred_times - t).min() <= tol for t in gt_times)
+                if len(pred_times)
+                else 0
             )
 
         return {
@@ -201,9 +216,22 @@ class SegmentationEvaluator:
     def _extract_boundary_times(
         self, units: List[SegmentationUnit]
     ) -> np.ndarray:
-        """All unique boundary times (N starts + final end) from units."""
+        """Unique boundary times for an utterance: every segment ``start``
+        plus the single final ``end``.
+
+        Adjacent segments share a boundary (one's ``end`` == the next's
+        ``start``); collecting only starts + the final end (then
+        ``np.unique``) represents each boundary exactly once — no double
+        counting.
+
+        With ``strip_endpoints`` the utterance start and end (the smallest
+        and largest times — frame 0 and frame T) are dropped so only
+        *internal* boundaries are scored.
+        """
         times = [u.start for u in units] + [units[-1].end]
-        return np.unique(times)
+        if self.strip_endpoints and len(times) >= 2:
+            times = times[1:-1]
+        return times
 
     def _get_boundary_metrics(
         self,

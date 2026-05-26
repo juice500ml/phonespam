@@ -852,7 +852,9 @@ def test_evaluator_perfect_alignment():
 
     gt = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
     pred = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
-    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(
+        tolerance_ms=20, strip_endpoints=False
+    ).evaluate_boundaries(pred, gt)
     assert res["precision"] == pytest.approx(1.0, abs=1e-5)
     assert res["recall"] == pytest.approx(1.0, abs=1e-5)
     assert res["f1"] == pytest.approx(1.0, abs=1e-5)
@@ -867,7 +869,9 @@ def test_evaluator_within_tolerance():
 
     gt = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
     pred = [SegmentationUnit(0.01, 0.11), SegmentationUnit(0.11, 0.21)]
-    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(
+        tolerance_ms=20, strip_endpoints=False
+    ).evaluate_boundaries(pred, gt)
     assert res["precision"] == pytest.approx(1.0, abs=1e-5)
     assert res["recall"] == pytest.approx(1.0, abs=1e-5)
 
@@ -881,7 +885,9 @@ def test_evaluator_outside_tolerance():
 
     gt = [SegmentationUnit(0.0, 0.1)]
     pred = [SegmentationUnit(0.03, 0.13)]
-    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(
+        tolerance_ms=20, strip_endpoints=False
+    ).evaluate_boundaries(pred, gt)
     # Boundaries in each: {0.0, 0.1} (gt), {0.03, 0.13} (pred). With 20ms
     # tolerance none align, so P=R=0.
     assert res["precision"] == pytest.approx(0.0, abs=1e-5)
@@ -903,10 +909,10 @@ def test_evaluator_strict_vs_lenient():
         SegmentationUnit(0.105, 0.115),
     ]
     lenient = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="lenient"
+        tolerance_ms=20, match_mode="lenient", strip_endpoints=False
     ).evaluate_boundaries(pred, gt)
     strict = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="strict"
+        tolerance_ms=20, match_mode="strict", strip_endpoints=False
     ).evaluate_boundaries(pred, gt)
 
     # 3 pred boundaries, 2 GT boundaries.
@@ -914,6 +920,49 @@ def test_evaluator_strict_vs_lenient():
     assert lenient["precision"] == pytest.approx(1.0, abs=1e-5)
     # Strict precision: at most min(3, 2) = 2 pairings → 2/3 ≈ 0.667
     assert strict["precision"] == pytest.approx(2.0 / 3.0, abs=1e-5)
+
+
+def test_evaluator_strip_endpoints_and_no_double_count():
+    """strip_endpoints drops the utterance start/end (0 and T) so only
+    internal boundaries are scored; and a contiguous tiling's shared
+    boundaries are counted once, not twice."""
+    from phonological_posteriogram.evaluation import (
+        SegmentationEvaluator,
+        SegmentationUnit,
+    )
+
+    # Contiguous tiling, boundary times {0.0, 0.1, 0.2, 0.3}.
+    units = [
+        SegmentationUnit(0.0, 0.1),
+        SegmentationUnit(0.1, 0.2),
+        SegmentationUnit(0.2, 0.3),
+    ]
+
+    # No double counting: 3 segments -> 4 unique boundaries (not 6), because
+    # each shared end==start is collected once + the single final end.
+    keep = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=False)
+    c_keep = keep._get_boundary_counts(units, units)
+    assert c_keep["pred_counter"] == 4
+    assert c_keep["gt_counter"] == 4
+
+    # Stripping drops 0.0 and 0.3, leaving the 2 internal boundaries.
+    strip = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=True)
+    c_strip = strip._get_boundary_counts(units, units)
+    assert c_strip["pred_counter"] == 2
+    assert c_strip["gt_counter"] == 2
+    assert c_strip["precision_counter"] == 2
+    assert c_strip["recall_counter"] == 2
+
+    # An utterance with no internal boundary strips to empty -> 0 counts,
+    # no crash (empty-array guard).
+    one = [SegmentationUnit(0.0, 0.1)]
+    c_empty = strip._get_boundary_counts(one, one)
+    assert c_empty == {
+        "precision_counter": 0,
+        "recall_counter": 0,
+        "pred_counter": 0,
+        "gt_counter": 0,
+    }
 
 
 def test_evaluator_forced_mode_includes_pbe_and_symbol_breakdown():
@@ -931,7 +980,7 @@ def test_evaluator_forced_mode_includes_pbe_and_symbol_breakdown():
         SegmentationUnit(0.11, 0.21, "b"),
     ]
     res = SegmentationEvaluator(
-        tolerance_ms=20, forced=True
+        tolerance_ms=20, forced=True, strip_endpoints=False
     ).evaluate_boundaries(pred, gt, symbols=["a", "b"])
 
     assert "pbe_mean" in res
@@ -955,9 +1004,9 @@ def test_evaluator_batch_aggregates_micro_and_macro():
         "u1": [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)],
         "u2": [SegmentationUnit(0.0, 0.1)],
     }
-    agg = SegmentationEvaluator(tolerance_ms=20).evaluate_batch(
-        batch_pred, batch_gt
-    )
+    agg = SegmentationEvaluator(
+        tolerance_ms=20, strip_endpoints=False
+    ).evaluate_batch(batch_pred, batch_gt)
 
     # Unique boundary counts:
     #   u1 pred {0.0, 0.1, 0.2} = 3,  u1 gt {0.0, 0.1, 0.2} = 3 (all match)
