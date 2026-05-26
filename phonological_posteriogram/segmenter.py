@@ -161,7 +161,7 @@ def _normalize_signal(signal, method):
     )
 
 
-COMBINE_METHODS = ("min", "logmeanexp")
+COMBINE_METHODS = ("min", "logmeanexp", "mean")
 
 
 def _combine_stacked(stacked, method):
@@ -178,6 +178,8 @@ def _combine_stacked(stacked, method):
             return np.exp(
                 np.mean(np.log(np.maximum(stacked, 1e-12)), axis=0)
             )
+    if method == "mean":
+        return np.mean(stacked, axis=0)
     raise ValueError(
         f"Unknown combine_method {method!r}; choose one of {COMBINE_METHODS}."
     )

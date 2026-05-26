@@ -310,7 +310,9 @@ def run(args):
                  "metrics": metrics}
             )
             print(
-                f"[{i:3d}] {args.metric}={score:.4f}  "
+                f"[{i:3d}] {rval}={metrics.get('rval', failed_score):.4f}  "
+                f"[{i:3d}] {precision}={metrics.get('precision', failed_score):.4f}  "
+                f"[{i:3d}] {recall}={metrics.get('recall', failed_score):.4f}  "
                 f"known_per={metrics.get('known_per', float('nan')):.4f}  "
                 f"unknown_per={metrics.get('unknown_per', float('nan')):.4f}  "
                 f"{overrides}"
