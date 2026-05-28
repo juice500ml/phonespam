@@ -119,6 +119,16 @@ def _get_args(argv=None):
         help="Boundary match policy.",
     )
     parser.add_argument(
+        "--no-dedup",
+        dest="dedup",
+        action="store_false",
+        help=(
+            "Don't merge consecutive same-label segments in recognize() — "
+            "score the pre-merge boundary set. By default consecutive "
+            "identical-label segments are collapsed."
+        ),
+    )
+    parser.add_argument(
         "--device", default="cpu", help="Torch device (cpu, cuda:0, ...)."
     )
     parser.add_argument(
@@ -228,24 +238,28 @@ def _resolve_known_lang_kwargs(df, audio_paths):
 def _score_hparams(
     model, overrides, kwargs_known,
     cache, ground_truth, seg_evaluator, rec_evaluator,
+    *,
+    dedup: bool = True,
 ):
     """Score one hparam override on the cached features under BOTH
     recognition conditions (known-language + unknown-language).
 
-    ``recognize()`` merges adjacent same-label segments, so the predicted
-    boundaries — and therefore the segmentation metrics — depend on the
-    labels. Both segmentation and recognition metrics are thus computed per
-    condition and returned with ``known_*`` / ``unknown_*`` prefixes.
+    When ``dedup`` is True (default), ``recognize()`` merges adjacent
+    same-label segments, so the predicted boundaries — and therefore the
+    segmentation metrics — depend on the labels. With ``dedup=False`` the
+    pre-merge boundary set is scored instead. Both segmentation and
+    recognition metrics are computed per condition and returned with
+    ``known_*`` / ``unknown_*`` prefixes.
     """
     seg = model.segmenter(overrides)
     preds_known, preds_unknown = {}, {}
     for path, (feats, waveform, posteriogram) in cache.items():
         boundaries = seg.segment(feats, waveform)
         triples_known = model.recognizer.recognize(
-            posteriogram, boundaries, **kwargs_known[path]
+            posteriogram, boundaries, dedup=dedup, **kwargs_known[path]
         )
         triples_unknown = model.recognizer.recognize(
-            posteriogram, boundaries, **_NO_CONSTRAINT
+            posteriogram, boundaries, dedup=dedup, **_NO_CONSTRAINT
         )
         preds_known[path] = _triples_to_units(model, triples_known)
         preds_unknown[path] = _triples_to_units(model, triples_unknown)
@@ -314,6 +328,7 @@ def run(args):
                 model, overrides, kwargs_known,
                 cache, ground_truth,
                 seg_evaluator, rec_evaluator,
+                dedup=args.dedup,
             )
             score = float(metrics.get(args.metric, failed_score))
             results.append(

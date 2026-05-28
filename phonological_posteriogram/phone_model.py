@@ -214,6 +214,7 @@ class PhoneModel:
         phoible_id: Optional[int] = None,
         phoneme: bool = False,
         vocab: Optional[Sequence[str]] = None,
+        dedup: bool = True,
     ) -> List[SegmentationUnit]:
         """End-to-end: load → encode → segment → per-segment recognize.
 
@@ -228,6 +229,9 @@ class PhoneModel:
                 recognizer output to (panphon-known phones only).
             lang / phoible_id / phoneme: optional Phoible-inventory vocab
                 constraint (mutually exclusive with ``vocab``).
+            dedup: if True (default), consecutive segments sharing a label are
+                merged into one span. Pass False to keep every segmenter
+                boundary in the output.
 
         Returns a list of :class:`SegmentationUnit` with start/end in
         seconds (via :meth:`SSLEncoder.frame_to_time`).
@@ -245,6 +249,7 @@ class PhoneModel:
             phoible_id=phoible_id,
             phoneme=phoneme,
             vocab=vocab,
+            dedup=dedup,
         )
         if not triples:
             return []

@@ -335,6 +335,7 @@ class Recognizer:
         phoible_id: Optional[int] = None,
         phoneme: bool = False,
         vocab: Optional[Sequence[str]] = None,
+        dedup: bool = True,
     ) -> List[Tuple[int, int, str]]:
         """Label each segment defined by ``boundaries`` via center pooling.
 
@@ -346,6 +347,10 @@ class Recognizer:
             lang / phoible_id / phoneme: optional Phoible-inventory vocab
                 constraint (mutually exclusive with ``vocab``). ``phoneme=True``
                 requires one of ``lang`` / ``phoible_id``.
+            dedup: if True (default), merge consecutive segments that share a
+                label into one span (the same phone can't sit side by side, so
+                a boundary between same-labeled segments is spurious). Pass
+                False to keep every segmenter boundary in the output.
 
         Returns ``list[(start_frame, end_frame, label)]`` (frame-based; the
         caller handles frame→time conversion).
@@ -384,6 +389,8 @@ class Recognizer:
             (int(bs[i]), int(bs[i + 1]), self.vocab[int(idxs[i])])
             for i in range(len(centers))
         ]
+        if not dedup:
+            return triples
         # Merge consecutive segments that share a label: the same phone can't
         # sit side by side, so a boundary between same-labeled segments is
         # spurious — collapse them into one span (start of first, end of last).

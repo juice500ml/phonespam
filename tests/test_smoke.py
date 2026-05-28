@@ -502,6 +502,31 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     assert units[0].end == pytest.approx(0.6)  # frame 30 * 0.02
 
 
+def test_phone_model_recognize_dedup_optional(monkeypatch):
+    """``dedup`` toggles consecutive same-label merging: True (default)
+    collapses runs into one span; False preserves every segmenter boundary."""
+    state = _make_posteriogram_state(in_dim=4)
+    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    post = PhonologicalPosteriogram.from_state(state)
+    model = _make_phone_model(monkeypatch, post, NET_SPEC)
+    monkeypatch.setattr(
+        model, "extract_features",
+        lambda w: np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (30, 1)),
+    )
+    monkeypatch.setattr(
+        model, "segmenter",
+        lambda overrides=None: type("S", (), {
+            "segment": lambda self, f, w, **k: np.array([10, 20])
+        })(),
+    )
+
+    # All 3 segments label "_" (silence-high posteriogram).
+    merged = model.recognize(np.zeros(16000, dtype=np.float32))  # dedup=True
+    raw = model.recognize(np.zeros(16000, dtype=np.float32), dedup=False)
+    assert len(merged) == 1 and merged[0].label == "_"
+    assert len(raw) == 3 and [u.label for u in raw] == ["_", "_", "_"]
+
+
 def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
     """model.recognize accepts a file path: it dispatches through load_audio
     and runs the full pipeline end-to-end without a precomputed waveform."""
