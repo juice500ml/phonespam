@@ -661,12 +661,13 @@ class PhoneRecognitionEvaluator:
         predictions: Dict[str, List],
         ground_truth: Dict[str, List],
     ) -> Dict:
-        """Micro-averaged PER and PFER over a batch of utterances.
+        """Macro-averaged PER and PFER over a batch of utterances.
 
         Both dicts map utterance id to either a list of label strings or a
-        list of :class:`SegmentationUnit`. PER and PFER are aggregated by
-        summing per-utterance distances and reference counts (rather than
-        averaging per-utterance rates), so each token contributes equally.
+        list of :class:`SegmentationUnit`. PER and PFER are averaged across
+        utterances (each utterance weighted equally, regardless of length),
+        i.e. the mean of the per-utterance :meth:`per` / :meth:`pfer` rates.
+        Utterances whose reference is empty after filtering are skipped.
         """
         assert any(uid in predictions for uid in ground_truth), (
             "No ground_truth id matched any prediction key — likely a "
@@ -674,32 +675,23 @@ class PhoneRecognitionEvaluator:
             f"gt={list(ground_truth)[:3]}, pred={list(predictions)[:3]}"
         )
 
-        total_per_d = 0
-        total_pfer_d = 0.0
-        total_ref_len = 0
+        per_sum = 0.0
+        pfer_sum = 0.0
         n_utts = 0
         for uid, ref_units in ground_truth.items():
             if uid not in predictions:
                 log.warning("Utterance %s missing in predictions; skipping.", uid)
                 continue
-            pred = self._filter(_as_labels(predictions[uid]))
-            ref = self._filter(_as_labels(ref_units))
-            if not ref:
+            if not self._filter(_as_labels(ref_units)):
                 continue
-            total_per_d += _levenshtein(pred, ref)
-            total_pfer_d += float(
-                self._dist.feature_edit_distance(
-                    "".join(pred), "".join(ref)
-                )
-            )
-            total_ref_len += len(ref)
+            per_sum += self.per(predictions[uid], ref_units)
+            pfer_sum += self.pfer(predictions[uid], ref_units)
             n_utts += 1
 
-        if total_ref_len == 0:
+        if n_utts == 0:
             return {}
         return {
-            "per": total_per_d / total_ref_len,
-            "pfer": total_pfer_d / total_ref_len,
+            "per": per_sum / n_utts,
+            "pfer": pfer_sum / n_utts,
             "n_utterances": n_utts,
-            "total_ref_phones": total_ref_len,
         }

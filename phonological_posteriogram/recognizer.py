@@ -65,13 +65,18 @@ def _load_inventory(phoible_id: int, phoneme: bool = False) -> Tuple[str, ...]:
             f"Phoible InventoryID {phoible_id} not found in the packaged "
             "phoible.csv."
         )
+    # Phoible uses the literal string "NA" as a no-data placeholder in the
+    # Phoneme/Allophones columns (the CSV is read with keep_default_na=False,
+    # so it stays a string rather than NaN). It's not a phone — skip it.
     if phoneme:
-        phones = sorted(rows["Phoneme"].dropna().unique())
+        phones = sorted(
+            p for p in rows["Phoneme"].dropna().unique() if p != "NA"
+        )
     else:
         # Allophones is a space-separated list per phoneme entry.
         phones_set: set = set()
         for s in rows["Allophones"].dropna():
-            phones_set.update(s.split())
+            phones_set.update(tok for tok in s.split() if tok != "NA")
         phones = sorted(phones_set)
 
     return _filter_panphon_known(

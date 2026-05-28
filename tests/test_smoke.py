@@ -1043,19 +1043,16 @@ def test_per_pfer_skip_silence_by_default():
     assert e.per(["_", "p", "_", "t"], ["p", "t", "_"]) == pytest.approx(0.0)
 
 
-def test_per_pfer_batch_micro_averaged():
-    """Batch aggregation is micro-averaged: total distance / total ref len."""
+def test_per_per_utterance_rates():
+    """Per-utterance PER is the token Levenshtein distance / ref length."""
     from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
 
     e = PhoneRecognitionEvaluator(skip_labels=())
-    # u1: 1 sub in 3 → 1/3 PER (would give 0.333 if averaged).
+    # u1: 1 sub in 3 → 1/3 PER.
     # u2: 0 errors in 5 → 0 PER.
-    # Micro: total errors = 1, total ref = 8 → 1/8 = 0.125.
     pred = {"u1": ["p", "b", "t"], "u2": ["a", "b", "c", "d", "e"]}
     gt = {"u1": ["p", "eɪ", "t"], "u2": ["a", "b", "c", "d", "e"]}
 
-    # Bypass PFER (panphon) by clearing the panphon-using path: just call
-    # per() per utterance, since evaluate_batch also invokes pfer().
     assert e.per(pred["u1"], gt["u1"]) == pytest.approx(1 / 3)
     assert e.per(pred["u2"], gt["u2"]) == pytest.approx(0.0)
 
@@ -1097,7 +1094,7 @@ def test_phone_recognition_evaluator_accepts_segmentation_units():
 
 
 def test_phone_recognition_evaluator_batch(monkeypatch):
-    """evaluate_batch micro-averages PER and PFER across utterances."""
+    """evaluate_batch macro-averages PER and PFER across utterances."""
     from phonological_posteriogram.evaluation import PhoneRecognitionEvaluator
 
     e = PhoneRecognitionEvaluator(skip_labels=())
@@ -1112,12 +1109,12 @@ def test_phone_recognition_evaluator_batch(monkeypatch):
     gt = {"u1": ["p", "eɪ", "t"], "u2": ["a", "b"]}
     result = e.evaluate_batch(pred, gt)
 
-    # Total PER errors = 1 + 0 = 1; total ref = 3 + 2 = 5; PER = 0.2.
-    assert result["per"] == pytest.approx(0.2)
-    # Total PFER cost = 2 + 2 = 4; total ref = 5; PFER = 0.8.
-    assert result["pfer"] == pytest.approx(0.8)
+    # Macro-average of per-utterance rates (each utterance weighted equally).
+    # PER: u1 = 1/3, u2 = 0 → mean = 1/6.
+    assert result["per"] == pytest.approx(1 / 6)
+    # PFER: u1 = 2.0/3, u2 = 2.0/2 = 1.0 → mean = (2/3 + 1) / 2 = 5/6.
+    assert result["pfer"] == pytest.approx(5 / 6)
     assert result["n_utterances"] == 2
-    assert result["total_ref_phones"] == 5
 
 
 def test_training_evaluate_gt_units_sorted():
@@ -1183,7 +1180,6 @@ class _FakeRecogEval:
             "per": 0.0,
             "pfer": 0.0,
             "n_utterances": sum(1 for k in ground_truth if k in predictions),
-            "total_ref_phones": sum(len(g) for g in ground_truth.values()),
         }
 
 
@@ -1646,7 +1642,6 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
             return {
                 "per": v, "pfer": 0.0,
                 "n_utterances": len(g),
-                "total_ref_phones": sum(len(vv) for vv in g.values()),
             }
 
     monkeypatch.setattr(tune, "PhoneRecognitionEvaluator", _OrderedRecogEval)

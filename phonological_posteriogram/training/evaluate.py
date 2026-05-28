@@ -156,8 +156,7 @@ def _print_recog_results(r):
         return
     print(
         f"\nPhone Recognition:  PER={r['per']:.4f}  PFER={r['pfer']:.4f}  "
-        f"(utterances={r['n_utterances']}, "
-        f"ref_phones={r['total_ref_phones']})"
+        f"(utterances={r['n_utterances']})"
     )
 
 
