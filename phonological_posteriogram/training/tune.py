@@ -16,12 +16,15 @@ two PER/PFER values are reported side-by-side:
 - **unknown-language**: no vocab constraint at all — the full panphon
   phone vocab.
 
-Boundary metrics (rval / f1 / precision / recall) are vocab-independent,
-so they're computed once and shown unprefixed. Recognition metrics appear
-twice: ``known_per`` / ``known_pfer`` and ``unknown_per`` / ``unknown_pfer``.
+Because ``recognize()`` merges adjacent same-label segments, the predicted
+boundaries depend on the labels — so **all** metrics are vocab-dependent and
+reported twice under ``known_*`` / ``unknown_*`` prefixes: boundary metrics
+(``known_rval`` / ``known_f1`` / …) and recognition metrics (``known_per`` /
+``known_pfer``), plus the ``unknown_*`` counterparts.
 
 The ``--metric`` arg picks which value to rank candidates by:
-higher-is-better for boundary metrics, lower-is-better for per/pfer.
+higher-is-better for boundary metrics (rval/f1/precision/recall),
+lower-is-better for per/pfer.
 
 The candidate list is a JSON file: a list whose items are hparam-override
 dicts (each merged on top of the model's default hparams).
@@ -58,7 +61,8 @@ from .evaluate import _gt_units
 
 LOWER_IS_BETTER = frozenset({"known_per", "known_pfer", "unknown_per", "unknown_pfer"})
 METRIC_CHOICES = (
-    "rval", "f1", "precision", "recall",
+    "known_rval", "known_f1", "known_precision", "known_recall",
+    "unknown_rval", "unknown_f1", "unknown_precision", "unknown_recall",
     "known_per", "known_pfer", "unknown_per", "unknown_pfer",
 )
 _NO_CONSTRAINT = dict(lang=None, phoible_id=None, phoneme=False, vocab=None)
@@ -93,13 +97,13 @@ def _get_args(argv=None):
     )
     parser.add_argument(
         "--metric",
-        default="rval",
+        default="known_rval",
         choices=METRIC_CHOICES,
         help=(
-            "Metric to rank candidates by. Boundary metrics "
-            "(rval/f1/precision/recall) are higher-is-better and "
-            "vocab-independent; known_/unknown_per/pfer are "
-            "lower-is-better and split by recognition condition."
+            "Metric to rank candidates by. All metrics are split by "
+            "recognition condition (known_*/unknown_*). Boundary metrics "
+            "(rval/f1/precision/recall) are higher-is-better; per/pfer are "
+            "lower-is-better."
         ),
     )
     parser.add_argument(
@@ -228,10 +232,10 @@ def _score_hparams(
     """Score one hparam override on the cached features under BOTH
     recognition conditions (known-language + unknown-language).
 
-    Boundaries are vocab-independent, so we segment once and feed the
-    same boundaries through the recognizer twice (constrained + free).
-    Returns a flat metrics dict with seg metrics unprefixed and
-    recognition metrics under ``known_*`` / ``unknown_*`` keys.
+    ``recognize()`` merges adjacent same-label segments, so the predicted
+    boundaries — and therefore the segmentation metrics — depend on the
+    labels. Both segmentation and recognition metrics are thus computed per
+    condition and returned with ``known_*`` / ``unknown_*`` prefixes.
     """
     seg = model.segmenter(overrides)
     preds_known, preds_unknown = {}, {}
@@ -246,15 +250,19 @@ def _score_hparams(
         preds_known[path] = _triples_to_units(model, triples_known)
         preds_unknown[path] = _triples_to_units(model, triples_unknown)
 
-    # Boundaries (and thus seg metrics) are identical across the two
-    # predictions — same segmenter, only the labels differ. Compute once.
-    seg_metrics = seg_evaluator.evaluate_batch(preds_known, ground_truth)
-    rec_known = rec_evaluator.evaluate_batch(preds_known, ground_truth)
-    rec_unknown = rec_evaluator.evaluate_batch(preds_unknown, ground_truth)
+    # Post-merge boundaries differ by vocab, so score each condition's
+    # segmentation + recognition metrics separately.
+    known = {
+        **seg_evaluator.evaluate_batch(preds_known, ground_truth),
+        **rec_evaluator.evaluate_batch(preds_known, ground_truth),
+    }
+    unknown = {
+        **seg_evaluator.evaluate_batch(preds_unknown, ground_truth),
+        **rec_evaluator.evaluate_batch(preds_unknown, ground_truth),
+    }
     return {
-        **seg_metrics,
-        **{f"known_{k}": v for k, v in rec_known.items()},
-        **{f"unknown_{k}": v for k, v in rec_unknown.items()},
+        **{f"known_{k}": v for k, v in known.items()},
+        **{f"unknown_{k}": v for k, v in unknown.items()},
     }
 
 
@@ -313,11 +321,11 @@ def run(args):
                  "metrics": metrics}
             )
             print(
-                f"[{i:3d}] rval={metrics.get('rval', failed_score):.4f}  "
-                f"[{i:3d}] precision={metrics.get('precision', failed_score):.4f}  "
-                f"[{i:3d}] recall={metrics.get('recall', failed_score):.4f}  "
-                f"known_per={metrics.get('known_per', float('nan')):.4f}  "
-                f"unknown_per={metrics.get('unknown_per', float('nan')):.4f}  "
+                f"[{i:3d}] rval={metrics.get('unknown_rval', failed_score):.4f}  "
+                f"precision={metrics.get('unknown_precision', float('nan')):.4f}  "
+                f"recall={metrics.get('unknown_recall', float('nan')):.4f}  "
+                f"pfer={metrics.get('unknown_pfer', float('nan')):.4f}  "
+                f"pfer (known)={metrics.get('known_pfer', float('nan')):.4f}  "
                 f"{overrides}"
             )
         except Exception as exc:  # one bad config shouldn't kill the sweep

@@ -75,6 +75,16 @@ def _make_phone_model(monkeypatch, posteriogram, net_spec, *, n_feat=3):
     monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
     model = PhoneModel(posteriogram, net_spec=net_spec)
     _wire_recognizer(model.recognizer, n_feat=n_feat)
+    # Pre-populate the lazily-loaded SSL encoder with a stub so recognize()
+    # (which converts frame indices via encoder.frame_to_time) never downloads
+    # the model. idx*stride/sr = idx*0.02 at 320/16k. Tests needing encoder
+    # features stub extract_features directly.
+    model._encoder = type(
+        "FakeEncoder", (),
+        {"frame_to_time": staticmethod(
+            lambda idxs: np.asarray(idxs, dtype=float) * 0.02
+        )},
+    )()
     return model
 
 
@@ -483,14 +493,13 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     units = model.recognize(np.zeros(16000, dtype=np.float32))
 
     assert extract_calls["n"] == 1  # encoder runs exactly once
-    assert len(units) == 3
     assert all(isinstance(u, SegmentationUnit) for u in units)
-    # Posteriogram is high on silence+ everywhere → every segment labels "_".
-    assert [u.label for u in units] == ["_", "_", "_"]
-    starts = [u.start for u in units]
-    ends = [u.end for u in units]
-    assert starts == sorted(starts)
-    assert ends == sorted(ends)
+    # Posteriogram is high on silence+ everywhere → all 3 segments label "_",
+    # and recognize() merges consecutive identical labels into a single span.
+    assert len(units) == 1
+    assert units[0].label == "_"
+    assert units[0].start == pytest.approx(0.0)
+    assert units[0].end == pytest.approx(0.6)  # frame 30 * 0.02
 
 
 def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
@@ -526,7 +535,8 @@ def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
     fake_path = tmp_path / "speech.wav"
     units = model.recognize(fake_path)
     assert load_calls == [str(fake_path)]
-    assert len(units) == 2
+    # Both segments label "_" (silence-high posteriogram) → merged into one.
+    assert len(units) == 1
     assert all(isinstance(u, SegmentationUnit) for u in units)
 
 
@@ -922,42 +932,47 @@ def test_evaluator_strict_vs_lenient():
     assert strict["precision"] == pytest.approx(2.0 / 3.0, abs=1e-5)
 
 
-def test_evaluator_strip_endpoints_and_no_double_count():
-    """strip_endpoints drops the utterance start/end (0 and T) so only
-    internal boundaries are scored; and a contiguous tiling's shared
-    boundaries are counted once, not twice."""
+def test_evaluator_strip_outer_silence_and_no_double_count():
+    """strip_endpoints drops only leading/trailing SILENCE ('_') segments, so
+    0/T is removed when it bounds silence and kept when the utterance begins/
+    ends on a real phone. Adjacent segments' shared boundary is counted once."""
     from phonological_posteriogram.evaluation import (
         SegmentationEvaluator,
         SegmentationUnit,
     )
 
-    # Contiguous tiling, boundary times {0.0, 0.1, 0.2, 0.3}.
-    units = [
-        SegmentationUnit(0.0, 0.1),
-        SegmentationUnit(0.1, 0.2),
-        SegmentationUnit(0.2, 0.3),
+    # Silence-bookended: _ a b _  → boundary times {0, .1, .2, .3, .4}.
+    sil = [
+        SegmentationUnit(0.0, 0.1, "_"),
+        SegmentationUnit(0.1, 0.2, "a"),
+        SegmentationUnit(0.2, 0.3, "b"),
+        SegmentationUnit(0.3, 0.4, "_"),
     ]
-
-    # No double counting: 3 segments -> 4 unique boundaries (not 6), because
-    # each shared end==start is collected once + the single final end.
+    # No strip: 4 segments -> 5 boundaries (not doubled: shared end==start
+    # collected once + the single final end).
     keep = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=False)
-    c_keep = keep._get_boundary_counts(units, units)
-    assert c_keep["pred_counter"] == 4
-    assert c_keep["gt_counter"] == 4
+    assert keep._get_boundary_counts(sil, sil)["gt_counter"] == 5
 
-    # Stripping drops 0.0 and 0.3, leaving the 2 internal boundaries.
+    # Strip: leading/trailing "_" dropped -> units [a, b] -> {.1, .2, .3}.
     strip = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=True)
-    c_strip = strip._get_boundary_counts(units, units)
-    assert c_strip["pred_counter"] == 2
-    assert c_strip["gt_counter"] == 2
-    assert c_strip["precision_counter"] == 2
-    assert c_strip["recall_counter"] == 2
+    c_sil = strip._get_boundary_counts(sil, sil)
+    assert c_sil["pred_counter"] == 3
+    assert c_sil["gt_counter"] == 3
+    assert c_sil["precision_counter"] == 3
+    assert c_sil["recall_counter"] == 3
 
-    # An utterance with no internal boundary strips to empty -> 0 counts,
-    # no crash (empty-array guard).
-    one = [SegmentationUnit(0.0, 0.1)]
-    c_empty = strip._get_boundary_counts(one, one)
-    assert c_empty == {
+    # No silence bookends: 0 and T are real-phone edges → kept even with strip.
+    nosil = [
+        SegmentationUnit(0.0, 0.1, "a"),
+        SegmentationUnit(0.1, 0.2, "b"),
+    ]
+    c_nosil = strip._get_boundary_counts(nosil, nosil)
+    assert c_nosil["pred_counter"] == 3  # {0, .1, .2} — endpoints retained
+    assert c_nosil["gt_counter"] == 3
+
+    # All-silence utterance strips to empty -> 0 counts, no crash.
+    allsil = [SegmentationUnit(0.0, 0.1, "_")]
+    assert strip._get_boundary_counts(allsil, allsil) == {
         "precision_counter": 0,
         "recall_counter": 0,
         "pred_counter": 0,

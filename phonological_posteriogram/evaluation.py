@@ -216,22 +216,38 @@ class SegmentationEvaluator:
     def _extract_boundary_times(
         self, units: List[SegmentationUnit]
     ) -> np.ndarray:
-        """Unique boundary times for an utterance: every segment ``start``
-        plus the single final ``end``.
+        """Boundary times for an utterance: each segment ``start`` plus the
+        single final ``end`` (ascending for sorted, contiguous units).
 
         Adjacent segments share a boundary (one's ``end`` == the next's
-        ``start``); collecting only starts + the final end (then
-        ``np.unique``) represents each boundary exactly once — no double
-        counting.
+        ``start``); collecting only starts + the final end represents each
+        boundary once.
 
-        With ``strip_endpoints`` the utterance start and end (the smallest
-        and largest times — frame 0 and frame T) are dropped so only
-        *internal* boundaries are scored.
+        With ``strip_endpoints`` (default), leading and trailing *silence*
+        segments are dropped first, so the utterance start/end boundaries are
+        removed only when they bound silence — the trivially-known 0/T edges —
+        and kept when the utterance begins/ends on a real phone. This mirrors
+        B's ``--strip-outer-silences`` and is applied to both prediction and
+        ground truth.
         """
+        if self.strip_endpoints:
+            units = self._strip_outer_silence(units)
+        if not units:
+            return np.array([])
         times = [u.start for u in units] + [units[-1].end]
-        if self.strip_endpoints and len(times) >= 2:
-            times = times[1:-1]
         return np.array(times)
+
+    @staticmethod
+    def _strip_outer_silence(
+        units: List[SegmentationUnit],
+    ) -> List[SegmentationUnit]:
+        """Drop leading and trailing silence segments (label ``"_"``)."""
+        lo, hi = 0, len(units)
+        while lo < hi and units[lo].label == "_":
+            lo += 1
+        while hi > lo and units[hi - 1].label == "_":
+            hi -= 1
+        return units[lo:hi]
 
     def _get_boundary_metrics(
         self,

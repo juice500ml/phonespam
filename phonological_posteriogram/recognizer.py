@@ -380,7 +380,17 @@ class Recognizer:
             masked = logits[:, mask]
             idxs = mask[masked.argmax(axis=1)]
 
-        return [
+        triples = [
             (int(bs[i]), int(bs[i + 1]), self.vocab[int(idxs[i])])
             for i in range(len(centers))
         ]
+        # Merge consecutive segments that share a label: the same phone can't
+        # sit side by side, so a boundary between same-labeled segments is
+        # spurious — collapse them into one span (start of first, end of last).
+        merged: List[Tuple[int, int, str]] = []
+        for s, e, lab in triples:
+            if merged and merged[-1][2] == lab:
+                merged[-1] = (merged[-1][0], e, lab)
+            else:
+                merged.append((s, e, lab))
+        return merged
