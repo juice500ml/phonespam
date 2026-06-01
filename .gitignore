@@ -29,3 +29,8 @@ env/
 
 # OS
 .DS_Store
+
+# data
+data/
+feats/
+models/

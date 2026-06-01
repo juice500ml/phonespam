@@ -51,6 +51,9 @@ TIMIT_CLOSURE_OF = {
     "jh": "dcl",
     "ch": "tcl",
 }
+# The closure tokens themselves (the values of TIMIT_CLOSURE_OF). Used when the
+# closure->release merge is disabled, to drop the standalone closure rows.
+TIMIT_CLOSURE_PHNS = frozenset(TIMIT_CLOSURE_OF.values())
 
 # Diphthongs are kept as a single row in the dataframe (so the segmenter can
 # pool features over the full glide), but they expand to two phones when
@@ -154,7 +157,7 @@ def _merge_stop_closures(utt_rows):
     return merged
 
 
-def _prepare_timit(timit_path: Path):
+def _prepare_timit(timit_path: Path, merge_closures: bool = True):
     """Read TIMIT directly off disk by globbing .WAV/.PHN file pairs.
 
     Adapted from https://github.com/juice500ml/phonetic-arithmetic/blob/main/prepare_datasets.py
@@ -166,29 +169,48 @@ def _prepare_timit(timit_path: Path):
     stop closures are merged into the following release in a separate
     utterance-wise pass (see :func:`_merge_stop_closures`).
     """
+    # Different TIMIT distributions use different casing (LDC ships uppercase
+    # TRAIN/TEST and .WAV/.PHN; other copies are lowercase), so match case
+    # insensitively. Note glob(case_sensitive=False) requires Python 3.12+.
     rows = []
     for split in ("TRAIN", "TEST"):
-        wav_paths = sorted(timit_path.glob(f"**/{split}/**/*.WAV"))
+        wav_paths = sorted(
+            timit_path.glob(f"**/{split}/**/*.WAV", case_sensitive=False)
+        )
         for audio_path in tqdm(wav_paths, desc=f"TIMIT {split}"):
-            phn_path = audio_path.with_suffix(".PHN")
-            if not phn_path.exists():
+            phn_path = next(
+                audio_path.parent.glob(
+                    f"{audio_path.stem}.PHN", case_sensitive=False
+                ),
+                None,
+            )
+            if phn_path is None:
                 continue
             utt_rows = []
             with open(phn_path) as f:
                 for line in f:
                     start_str, stop_str, phn = line.strip().split()
+                    ipa = TIMIT_TO_IPA[phn]
+                    if not merge_closures and phn in TIMIT_CLOSURE_PHNS:
+                        # Leave the closure unmerged and unlabeled so it is
+                        # dropped before fitting; the release then keeps its
+                        # own [start, end] span instead of absorbing the
+                        # closure.
+                        ipa = np.nan
                     utt_rows.append(
                         {
                             "audio_path": str(audio_path),
                             "min": int(start_str) / 16000,
                             "max": int(stop_str) / 16000,
                             "timit_phn": phn,
-                            "ipa": TIMIT_TO_IPA[phn],
+                            "ipa": ipa,
                             "split": split.lower(),
                             "language": "eng",
                         }
                     )
-            rows.extend(_merge_stop_closures(utt_rows))
+            if merge_closures:
+                utt_rows = _merge_stop_closures(utt_rows)
+            rows.extend(utt_rows)
 
     df = pd.DataFrame(rows)
     df = df[df.ipa.notna()].reset_index(drop=True)
@@ -223,16 +245,25 @@ def _prepare_voxangeles(root_path: Path):
 
 def run(args):
     print(args)
-    prep = {
-        "timit": _prepare_timit,
-        "voxangeles": _prepare_voxangeles,
-    }[args.dataset_type]
-    df = prep(args.dataset_path)
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = args.output_dir / f"{args.dataset_type}.csv"
-    df.to_csv(str(csv_path), index=False)
-    print("Stored to", csv_path)
+    if args.dataset_type == "timit":
+        # TIMIT stop/affricate closures can either be folded into the following
+        # release (``-merged``, the standard evaluation-boundary convention,
+        # matching prior work) or dropped so each release keeps just its own span
+        # (``-dropped-closures``, cleaner release-only features for fitting). The
+        # two give different segment boundaries, so we always emit both and let
+        # downstream steps pick: ``-merged`` for evaluation GT, ``-dropped-closures``
+        # for training.
+        for tag, merge_closures in (("merged", True), ("dropped-closures", False)):
+            df = _prepare_timit(args.dataset_path, merge_closures=merge_closures)
+            csv_path = args.output_dir / f"{args.dataset_type}-{tag}.csv"
+            df.to_csv(str(csv_path), index=False)
+            print("Stored to", csv_path)
+    else:
+        df = _prepare_voxangeles(args.dataset_path)
+        csv_path = args.output_dir / f"{args.dataset_type}.csv"
+        df.to_csv(str(csv_path), index=False)
+        print("Stored to", csv_path)
 
 
 def main(argv=None):

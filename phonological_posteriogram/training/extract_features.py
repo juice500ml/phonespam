@@ -87,6 +87,23 @@ def _get_args(argv=None):
     return args
 
 
+def _center_feat(row, feats):
+    """The single frame at the phone's temporal midpoint.
+
+    With :meth:`SSLEncoder.__call__`'s centered padding, frame ``k``
+    corresponds to the input window ``[k*stride, (k+1)*stride)``, so the
+    midpoint maps to ``floor(mid_samples / stride)`` directly. We index that
+    frame straight from the phone midpoint rather than slicing
+    ``[start, end]`` and taking the middle element: the old approach drifted
+    by a frame for short phones because the slice length depended on how
+    ``start``/``end`` rounded independently.
+    """
+    f = feats[row.audio_path]
+    k = int(row["_center_frame"])
+    k = min(max(k, 0), len(f) - 1)
+    return f[k]
+
+
 def _slice_feats(row, feats):
     f = feats[row.audio_path]
     i = int(row["_frame_min"])
@@ -99,11 +116,9 @@ def _slice_feats(row, feats):
 
 
 def _pool_feats(feat, pool):
-    if pool == "center":
-        return feat[len(feat) // 2]
     if pool == "average":
         return feat.mean(0)
-    raise ValueError(f"Unknown pool: {pool}")
+    raise ValueError(f"Unknown pool for slice path: {pool}")
 
 
 def run(args):
@@ -127,13 +142,21 @@ def run(args):
         x, _ = librosa.load(path, sr=args.sr, mono=True)
         data[path] = encoder(x)
 
-    # One batched call to the encoder's conv-stack accounting per column.
-    df["_frame_min"] = encoder.time_to_frame(df["min"].to_numpy())
-    df["_frame_max"] = encoder.time_to_frame(df["max"].to_numpy())
-
-    df["feat"] = df.apply(functools.partial(_slice_feats, feats=data), axis=1)
-    df = df.drop(columns=["_frame_min", "_frame_max"])
-    df["feat"] = df["feat"].apply(functools.partial(_pool_feats, pool=args.pool))
+    if args.pool == "center":
+        # Index the single frame at each phone's temporal midpoint.
+        mids = (df["min"].to_numpy() + df["max"].to_numpy()) / 2.0
+        df["_center_frame"] = encoder.time_to_frame(mids)
+        df["feat"] = df.apply(functools.partial(_center_feat, feats=data), axis=1)
+        df = df.drop(columns=["_center_frame"])
+    else:
+        # Pool over the frames spanning [start, end).
+        df["_frame_min"] = encoder.time_to_frame(df["min"].to_numpy())
+        df["_frame_max"] = encoder.time_to_frame(df["max"].to_numpy())
+        df["feat"] = df.apply(functools.partial(_slice_feats, feats=data), axis=1)
+        df = df.drop(columns=["_frame_min", "_frame_max"])
+        df["feat"] = df["feat"].apply(
+            functools.partial(_pool_feats, pool=args.pool)
+        )
 
     df.attrs["hf_repo"] = args.model
     df.attrs["encoder_layer"] = args.layer_index

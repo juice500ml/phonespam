@@ -75,9 +75,15 @@ class SSLEncoder:
 
     def time_to_frame(self, times_seconds: np.ndarray) -> np.ndarray:
         """Map times (seconds) to feature-frame indices.
+
+        Returns the frame whose centered window ``[k*stride, (k+1)*stride)``
+        contains the time, i.e. ``floor(t*sr/stride)``. This matches the
+        centered padding applied in :meth:`__call__` (frame k is centered on
+        input sample ``(k+0.5)*stride``), so the mapping is a plain divide by
+        the stride with no receptive-field offset.
         """
         t = np.asarray(times_seconds, dtype=np.float64)
-        idx = np.round(t * self.sr / self.stride_size).astype(np.int64)
+        idx = np.floor(t * self.sr / self.stride_size).astype(np.int64)
         return np.clip(idx, 0, None)
 
     def frame_to_time(self, frame_indices: np.ndarray) -> np.ndarray:
