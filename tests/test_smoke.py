@@ -887,9 +887,7 @@ def test_evaluator_perfect_alignment():
 
     gt = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
     pred = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
-    res = SegmentationEvaluator(
-        tolerance_ms=20, strip_endpoints=False
-    ).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
     assert res["precision"] == pytest.approx(1.0, abs=1e-5)
     assert res["recall"] == pytest.approx(1.0, abs=1e-5)
     assert res["f1"] == pytest.approx(1.0, abs=1e-5)
@@ -904,9 +902,7 @@ def test_evaluator_within_tolerance():
 
     gt = [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)]
     pred = [SegmentationUnit(0.01, 0.11), SegmentationUnit(0.11, 0.21)]
-    res = SegmentationEvaluator(
-        tolerance_ms=20, strip_endpoints=False
-    ).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
     assert res["precision"] == pytest.approx(1.0, abs=1e-5)
     assert res["recall"] == pytest.approx(1.0, abs=1e-5)
 
@@ -920,9 +916,7 @@ def test_evaluator_outside_tolerance():
 
     gt = [SegmentationUnit(0.0, 0.1)]
     pred = [SegmentationUnit(0.03, 0.13)]
-    res = SegmentationEvaluator(
-        tolerance_ms=20, strip_endpoints=False
-    ).evaluate_boundaries(pred, gt)
+    res = SegmentationEvaluator(tolerance_ms=20).evaluate_boundaries(pred, gt)
     # Boundaries in each: {0.0, 0.1} (gt), {0.03, 0.13} (pred). With 20ms
     # tolerance none align, so P=R=0.
     assert res["precision"] == pytest.approx(0.0, abs=1e-5)
@@ -944,10 +938,10 @@ def test_evaluator_strict_vs_lenient():
         SegmentationUnit(0.105, 0.115),
     ]
     lenient = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="lenient", strip_endpoints=False
+        tolerance_ms=20, match_mode="lenient"
     ).evaluate_boundaries(pred, gt)
     strict = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="strict", strip_endpoints=False
+        tolerance_ms=20, match_mode="strict"
     ).evaluate_boundaries(pred, gt)
 
     # 3 pred boundaries, 2 GT boundaries.
@@ -958,35 +952,30 @@ def test_evaluator_strict_vs_lenient():
 
 
 def test_evaluator_strip_outer_silence_and_no_double_count():
-    """strip_endpoints drops only leading/trailing SILENCE ('_') segments, so
-    0/T is removed when it bounds silence and kept when the utterance begins/
-    ends on a real phone. Adjacent segments' shared boundary is counted once."""
+    """Leading/trailing SILENCE ('_') segments are always stripped, so 0/T is
+    removed when it bounds silence and kept when the utterance begins/ends on
+    a real phone. Adjacent segments' shared boundary is counted once."""
     from phonological_posteriogram.evaluation import (
         SegmentationEvaluator,
         SegmentationUnit,
     )
 
-    # Silence-bookended: _ a b _  → boundary times {0, .1, .2, .3, .4}.
+    # Silence-bookended: _ a b _.
     sil = [
         SegmentationUnit(0.0, 0.1, "_"),
         SegmentationUnit(0.1, 0.2, "a"),
         SegmentationUnit(0.2, 0.3, "b"),
         SegmentationUnit(0.3, 0.4, "_"),
     ]
-    # No strip: 4 segments -> 5 boundaries (not doubled: shared end==start
-    # collected once + the single final end).
-    keep = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=False)
-    assert keep._get_boundary_counts(sil, sil)["gt_counter"] == 5
-
-    # Strip: leading/trailing "_" dropped -> units [a, b] -> {.1, .2, .3}.
-    strip = SegmentationEvaluator(tolerance_ms=20, strip_endpoints=True)
+    # Leading/trailing "_" dropped -> units [a, b] -> {.1, .2, .3}.
+    strip = SegmentationEvaluator(tolerance_ms=20)
     c_sil = strip._get_boundary_counts(sil, sil)
     assert c_sil["pred_counter"] == 3
     assert c_sil["gt_counter"] == 3
     assert c_sil["precision_counter"] == 3
     assert c_sil["recall_counter"] == 3
 
-    # No silence bookends: 0 and T are real-phone edges → kept even with strip.
+    # No silence bookends: 0 and T are real-phone edges → kept.
     nosil = [
         SegmentationUnit(0.0, 0.1, "a"),
         SegmentationUnit(0.1, 0.2, "b"),
@@ -1020,7 +1009,7 @@ def test_evaluator_forced_mode_includes_pbe_and_symbol_breakdown():
         SegmentationUnit(0.11, 0.21, "b"),
     ]
     res = SegmentationEvaluator(
-        tolerance_ms=20, forced=True, strip_endpoints=False
+        tolerance_ms=20, forced=True
     ).evaluate_boundaries(pred, gt, symbols=["a", "b"])
 
     assert "pbe_mean" in res
@@ -1044,9 +1033,9 @@ def test_evaluator_batch_aggregates_micro_and_macro():
         "u1": [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)],
         "u2": [SegmentationUnit(0.0, 0.1)],
     }
-    agg = SegmentationEvaluator(
-        tolerance_ms=20, strip_endpoints=False
-    ).evaluate_batch(batch_pred, batch_gt)
+    agg = SegmentationEvaluator(tolerance_ms=20).evaluate_batch(
+        batch_pred, batch_gt
+    )
 
     # Unique boundary counts:
     #   u1 pred {0.0, 0.1, 0.2} = 3,  u1 gt {0.0, 0.1, 0.2} = 3 (all match)
@@ -1338,9 +1327,8 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
     assert results["pfer"] == 0.0
 
 
-def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
-    """A failing librosa.load is reported and the utterance is skipped, but
-    the script doesn't crash."""
+def test_training_evaluate_fails_fast_on_missing_audio(tmp_path, monkeypatch):
+    """A failing audio load aborts evaluation at the first bad utterance."""
     pd = pytest.importorskip("pandas")
     ev = pytest.importorskip("phonological_posteriogram.training.evaluate")
 
@@ -1367,9 +1355,8 @@ def test_training_evaluate_handles_missing_audio(tmp_path, monkeypatch):
     args = ev._get_args(
         ["--model", "ignored", "--dataset_csv", str(csv_path)]
     )
-    results = ev.run(args)
-    # Only the good utterance was evaluated.
-    assert results["total_segments"] == 1
+    with pytest.raises(FileNotFoundError, match="bad\\.wav"):
+        ev.run(args)
 
 
 def test_add_phone_context_adjacent_diphthongs():

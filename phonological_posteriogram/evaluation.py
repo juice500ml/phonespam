@@ -59,13 +59,10 @@ class SegmentationEvaluator:
             ``"lenient"`` (default): independent nearest-neighbour — every
             boundary counts as TP iff any counterpart lies within
             tolerance, with no exclusivity.
-        strip_endpoints: If True (default), drop each utterance's first and
-            last boundary (the start of the first segment and the end of the
-            last — i.e. frame 0 and frame T) before scoring. These are
-            trivially known (the recognizer always emits them and the GT
-            always tiles to them), so scoring them inflates the metrics.
-            Pass False to score the raw boundary set (e.g. when testing the
-            matching logic directly).
+
+    Leading and trailing silence (``"_"``) segments are always stripped
+    before scoring, so the trivially-known 0/T edges are dropped when they
+    bound silence and kept when the utterance begins/ends on a real phone.
     """
 
     def __init__(
@@ -73,7 +70,6 @@ class SegmentationEvaluator:
         tolerance_ms: int = 20,
         forced: bool = False,
         match_mode: str = "lenient",
-        strip_endpoints: bool = True,
     ):
         if match_mode not in {"strict", "lenient"}:
             raise ValueError(
@@ -83,7 +79,6 @@ class SegmentationEvaluator:
         self._tol_eps = 1e-9  # Float-precision slack on the boundary check.
         self.forced = forced
         self.match_mode = match_mode
-        self.strip_endpoints = strip_endpoints
 
     def evaluate_boundaries(
         self,
@@ -223,15 +218,14 @@ class SegmentationEvaluator:
         ``start``); collecting only starts + the final end represents each
         boundary once.
 
-        With ``strip_endpoints`` (default), leading and trailing *silence*
-        segments are dropped first, so the utterance start/end boundaries are
-        removed only when they bound silence — the trivially-known 0/T edges —
-        and kept when the utterance begins/ends on a real phone. This mirrors
-        B's ``--strip-outer-silences`` and is applied to both prediction and
-        ground truth.
+        Leading and trailing *silence* segments are dropped first, so the
+        utterance start/end boundaries are removed only when they bound
+        silence — the trivially-known 0/T edges — and kept when the utterance
+        begins/ends on a real phone. This mirrors the Speech-Segmentation
+        repo's ``--strip-outer-silences`` and is applied to both prediction
+        and ground truth.
         """
-        if self.strip_endpoints:
-            units = self._strip_outer_silence(units)
+        units = self._strip_outer_silence(units)
         if not units:
             return np.array([])
         times = [u.start for u in units] + [units[-1].end]

@@ -16,15 +16,18 @@ Run as::
 
     python -m phonological_posteriogram.training.evaluate \\
         --model user/phonpost-wavlm-large \\
-        --dataset_csv timit.csv \\
+        --dataset_csv data/timit-merged.csv \\
         --split test
+
+For TIMIT, ``prepare_datasets`` writes both ``data/timit-merged.csv`` and
+``data/timit-dropped-closures.csv``. Use the merged CSV for evaluation
+ground truth; the dropped-closures CSV is intended for release-only training
+features.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -127,17 +130,6 @@ def _get_args(argv=None):
         default=None,
         help="Cap on number of utterances; useful for quick sanity checks.",
     )
-    parser.add_argument(
-        "--keep-endpoints",
-        dest="keep_endpoints",
-        action="store_true",
-        help=(
-            "Score the utterance start/end boundaries (frame 0 and frame T) "
-            "too. By default they are skipped: the recognizer always emits "
-            "them and the GT always tiles to them, so they are trivially "
-            "correct and would inflate the metrics."
-        ),
-    )
     return parser.parse_args(argv)
 
 
@@ -185,18 +177,13 @@ def run(args):
     symbols_dict = {} if args.forced else None
 
     for audio_path in tqdm(audio_paths, desc="Evaluating"):
-        try:
-            units = model.recognize(
-                audio_path,
-                lang=args.lang,
-                phoible_id=args.phoible_id,
-                phoneme=args.phoneme,
-                vocab=vocab,
-            )
-        except Exception:
-            print(f"Failed on {audio_path}:", file=sys.stderr)
-            traceback.print_exc()
-            continue
+        units = model.recognize(
+            audio_path,
+            lang=args.lang,
+            phoible_id=args.phoible_id,
+            phoneme=args.phoneme,
+            vocab=vocab,
+        )
 
         gt = _gt_units(df[df.audio_path == audio_path])
         ground_truth[audio_path] = gt
@@ -208,7 +195,6 @@ def run(args):
         tolerance_ms=args.tolerance_ms,
         forced=args.forced,
         match_mode=args.match_mode,
-        strip_endpoints=not args.keep_endpoints,
     )
     seg_results = seg_eval.evaluate_batch(
         predictions, ground_truth, symbols_dict=symbols_dict

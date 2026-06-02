@@ -33,8 +33,12 @@ Run as::
 
     python -m phonological_posteriogram.training.tune \\
         --model user/phonpost-wavlm-large \\
-        --dataset_csv timit.csv \\
+        --dataset_csv data/timit-merged.csv \\
         --hparams_json grid.json
+
+For TIMIT, ``prepare_datasets`` writes both ``data/timit-merged.csv`` and
+``data/timit-dropped-closures.csv``. Tune/evaluate against the merged CSV;
+use the dropped-closures CSV for release-only training features.
 """
 
 from __future__ import annotations
@@ -42,7 +46,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import traceback
 import warnings
 from pathlib import Path
 
@@ -164,16 +167,11 @@ def _extract_feature_cache(model, df, audio_paths):
     cache = {}
     ground_truth = {}
     for audio_path in tqdm(audio_paths, desc="Encoding (once)"):
-        try:
-            x = model.load_audio(audio_path)
-            feats = model.extract_features(x)
-            posteriogram = model.posteriogram.project(
-                feats, view="ipa", act="sigmoid"
-            )
-        except Exception:
-            print(f"Failed to encode {audio_path}:", file=sys.stderr)
-            traceback.print_exc()
-            continue
+        x = model.load_audio(audio_path)
+        feats = model.extract_features(x)
+        posteriogram = model.posteriogram.project(
+            feats, view="ipa", act="sigmoid"
+        )
         cache[audio_path] = (feats, x, posteriogram)
         ground_truth[audio_path] = _gt_units(df[df.audio_path == audio_path])
     return cache, ground_truth
@@ -307,8 +305,6 @@ def run(args):
     seg_evaluator = SegmentationEvaluator(
         tolerance_ms=args.tolerance_ms,
         match_mode=args.match_mode,
-        # Tune the same metric eval reports: skip the trivial 0/T endpoints.
-        strip_endpoints=True,
     )
     rec_evaluator = PhoneRecognitionEvaluator()
 
