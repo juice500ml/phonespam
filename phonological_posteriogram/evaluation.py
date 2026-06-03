@@ -60,7 +60,7 @@ class SegmentationEvaluator:
             boundary counts as TP iff any counterpart lies within
             tolerance, with no exclusivity.
 
-    Leading and trailing silence (``"_"``) segments are always stripped
+    One leading and one trailing silence (``"_"``) segment are stripped
     before scoring, so the trivially-known 0/T edges are dropped when they
     bound silence and kept when the utterance begins/ends on a real phone.
     """
@@ -218,12 +218,12 @@ class SegmentationEvaluator:
         ``start``); collecting only starts + the final end represents each
         boundary once.
 
-        Leading and trailing *silence* segments are dropped first, so the
+        One leading and one trailing *silence* segment are dropped first, so the
         utterance start/end boundaries are removed only when they bound
         silence — the trivially-known 0/T edges — and kept when the utterance
         begins/ends on a real phone. This mirrors the Speech-Segmentation
-        repo's ``--strip-outer-silences`` and is applied to both prediction
-        and ground truth.
+        repo's ``--strip-outer-silences`` convention without letting a run of
+        predicted silence labels delete internal segmenter boundaries.
         """
         units = self._strip_outer_silence(units)
         if not units:
@@ -235,11 +235,11 @@ class SegmentationEvaluator:
     def _strip_outer_silence(
         units: List[SegmentationUnit],
     ) -> List[SegmentationUnit]:
-        """Drop leading and trailing silence segments (label ``"_"``)."""
+        """Drop at most one leading and one trailing silence segment."""
         lo, hi = 0, len(units)
-        while lo < hi and units[lo].label == "_":
+        if lo < hi and units[lo].label == "_":
             lo += 1
-        while hi > lo and units[hi - 1].label == "_":
+        if hi > lo and units[hi - 1].label == "_":
             hi -= 1
         return units[lo:hi]
 

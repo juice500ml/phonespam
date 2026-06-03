@@ -23,7 +23,7 @@ TIMIT_TO_IPA = {
     "f": "f", "th": "θ", "v": "v", "dh": "ð",
     # Nasals
     "m": "m", "n": "n", "ng": "ŋ", "em": "m̩",
-    "en": "n̩", "eng": "ŋ̍", "nx": "ɾ̃",
+    "en": "n̩", "eng": "ŋ̩", "nx": "ɾ̃",
     # Semivowels and glides
     "l": "l", "r": "ɹ", "w": "w", "y": "j",
     "hh": "h", "hv": "ɦ", "el": "l̩",
@@ -157,7 +157,27 @@ def _merge_stop_closures(utt_rows):
     return merged
 
 
-def _prepare_timit(timit_path: Path, merge_closures: bool = True):
+def _merge_adjacent_silence(utt_rows):
+    """Coalesce consecutive silence rows into one interval.
+
+    Ground-truth CSVs should have at most one silence segment at an utterance
+    edge. Evaluation strips a single outer silence segment, so adjacent "_"
+    rows need to be merged before context columns and boundary counts are
+    derived.
+    """
+    merged = []
+    for row in utt_rows:
+        if merged and merged[-1]["ipa"] == "_" and row["ipa"] == "_":
+            merged[-1] = {**merged[-1], "max": row["max"]}
+        else:
+            merged.append(row)
+    return merged
+
+
+TIMIT_MODES = ("raw", "dropped-closures", "merged")
+
+
+def _prepare_timit(timit_path: Path, mode: str = "merged"):
     """Read TIMIT directly off disk by globbing .WAV/.PHN file pairs.
 
     Adapted from https://github.com/juice500ml/phonetic-arithmetic/blob/main/prepare_datasets.py
@@ -165,10 +185,26 @@ def _prepare_timit(timit_path: Path, merge_closures: bool = True):
 
     `timit_path` is the TIMIT root directory containing TRAIN/ and TEST/.
     Each .WAV file has a sibling .PHN file with `start stop phone` lines
-    (sample indices at 16 kHz). Each utterance is parsed in full, then its
-    stop closures are merged into the following release in a separate
-    utterance-wise pass (see :func:`_merge_stop_closures`).
+    (sample indices at 16 kHz).
+
+    `mode` controls how TIMIT stop/affricate closures (``bcl dcl gcl kcl pcl
+    tcl``) are handled. TIMIT writes most stops/affricates as a closure
+    interval immediately followed by a release (``tcl t``, ``tcl ch``, ...):
+
+      * ``"raw"`` -- keep every interval as its own row. Closure rows keep
+        their raw ``timit_phn`` token (e.g. ``tcl``) but get ``ipa = NaN``,
+        leaving any closure/release labeling to downstream code. Nothing is
+        merged or dropped, so this is the faithful substrate for modeling
+        closure vs. release explicitly.
+      * ``"dropped-closures"`` -- closure rows are dropped (``ipa = NaN`` and
+        then filtered out), so each release keeps just its own ``[start, end]``
+        span. Cleaner release-only features for fitting.
+      * ``"merged"`` -- each closure is folded into the following release
+        span (see :func:`_merge_stop_closures`); a stranded closure falls back
+        to its bare stop label via ``TIMIT_TO_IPA``. The standard
+        evaluation-boundary convention, matching prior work.
     """
+    assert mode in TIMIT_MODES, f"unknown TIMIT mode: {mode!r}"
     # Different TIMIT distributions use different casing (LDC ships uppercase
     # TRAIN/TEST and .WAV/.PHN; other copies are lowercase), so match case
     # insensitively. Note glob(case_sensitive=False) requires Python 3.12+.
@@ -191,11 +227,13 @@ def _prepare_timit(timit_path: Path, merge_closures: bool = True):
                 for line in f:
                     start_str, stop_str, phn = line.strip().split()
                     ipa = TIMIT_TO_IPA[phn]
-                    if not merge_closures and phn in TIMIT_CLOSURE_PHNS:
-                        # Leave the closure unmerged and unlabeled so it is
-                        # dropped before fitting; the release then keeps its
-                        # own [start, end] span instead of absorbing the
-                        # closure.
+                    if mode != "merged" and phn in TIMIT_CLOSURE_PHNS:
+                        # Leave the closure unmerged and unlabeled. In
+                        # "dropped-closures" the NaN ipa filters the row out;
+                        # in "raw" the row survives (see the keep below) but
+                        # stays phonologically unlabeled. Either way the
+                        # release keeps its own [start, end] span instead of
+                        # absorbing the closure.
                         ipa = np.nan
                     utt_rows.append(
                         {
@@ -208,12 +246,17 @@ def _prepare_timit(timit_path: Path, merge_closures: bool = True):
                             "language": "eng",
                         }
                     )
-            if merge_closures:
+            if mode == "merged":
                 utt_rows = _merge_stop_closures(utt_rows)
+            utt_rows = _merge_adjacent_silence(utt_rows)
             rows.extend(utt_rows)
 
     df = pd.DataFrame(rows)
-    df = df[df.ipa.notna()].reset_index(drop=True)
+    # "raw" keeps the unlabeled (ipa=NaN) closure rows; the other modes drop
+    # every unlabeled row before fitting.
+    if mode != "raw":
+        df = df[df.ipa.notna()]
+    df = df.reset_index(drop=True)
     return _add_phone_context(df)
 
 
@@ -228,9 +271,10 @@ def _prepare_voxangeles(root_path: Path):
         tier_name = next(
             x for x in grid.tierNames if x in ("phone", "phones", "Narrow")
         )
+        utt_rows = []
         for entry in grid.getTier(tier_name).entries:
             label = (entry.label or "").strip()
-            rows.append(
+            utt_rows.append(
                 {
                     "audio_path": str(path.with_suffix(".wav")),
                     "min": entry.start,
@@ -240,6 +284,7 @@ def _prepare_voxangeles(root_path: Path):
                     "language": path.parent.name,
                 }
             )
+        rows.extend(_merge_adjacent_silence(utt_rows))
     return _add_phone_context(pd.DataFrame(rows))
 
 
@@ -247,15 +292,19 @@ def run(args):
     print(args)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.dataset_type == "timit":
-        # TIMIT stop/affricate closures can either be folded into the following
-        # release (``-merged``, the standard evaluation-boundary convention,
-        # matching prior work) or dropped so each release keeps just its own span
-        # (``-dropped-closures``, cleaner release-only features for fitting). The
-        # two give different segment boundaries, so we always emit both and let
-        # downstream steps pick: ``-merged`` for evaluation GT, ``-dropped-closures``
-        # for training.
-        for tag, merge_closures in (("merged", True), ("dropped-closures", False)):
-            df = _prepare_timit(args.dataset_path, merge_closures=merge_closures)
+        # TIMIT stop/affricate closures are handled three different ways, each
+        # useful downstream (see :func:`_prepare_timit` for details):
+        #   * ``-raw``              every interval kept, closures unlabeled
+        #                           (substrate for explicit closure/release
+        #                           modeling).
+        #   * ``-dropped-closures`` closures dropped, release-only spans
+        #                           (cleaner features for fitting).
+        #   * ``-merged``           closures folded into the release
+        #                           (standard evaluation-boundary convention).
+        # The three give different segment boundaries, so we emit all of them
+        # and let downstream steps pick.
+        for tag in TIMIT_MODES:
+            df = _prepare_timit(args.dataset_path, mode=tag)
             csv_path = args.output_dir / f"{args.dataset_type}-{tag}.csv"
             df.to_csv(str(csv_path), index=False)
             print("Stored to", csv_path)

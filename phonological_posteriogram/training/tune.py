@@ -127,8 +127,9 @@ def _get_args(argv=None):
         action="store_false",
         help=(
             "Don't merge consecutive same-label segments in recognize() — "
-            "score the pre-merge boundary set. By default consecutive "
-            "identical-label segments are collapsed."
+            "score the unmerged boundary set after the evaluator's one "
+            "outer-silence strip. By default consecutive identical-label "
+            "segments are collapsed."
         ),
     )
     parser.add_argument(
@@ -245,8 +246,9 @@ def _score_hparams(
     When ``dedup`` is True (default), ``recognize()`` merges adjacent
     same-label segments, so the predicted boundaries — and therefore the
     segmentation metrics — depend on the labels. With ``dedup=False`` the
-    pre-merge boundary set is scored instead. Both segmentation and
-    recognition metrics are computed per condition and returned with
+    unmerged boundary set is scored after the evaluator's single outer-silence
+    strip. Both segmentation and recognition metrics are computed per
+    condition and returned with
     ``known_*`` / ``unknown_*`` prefixes.
     """
     seg = model.segmenter(overrides)

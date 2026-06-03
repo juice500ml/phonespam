@@ -840,6 +840,25 @@ def test_merge_stop_closures_release_without_closure_unchanged():
     assert out[1]["min"] == 0.10  # not extended
 
 
+def test_merge_adjacent_silence_coalesces_only_consecutive_silence():
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
+
+    rows = [
+        _phn_row("h#", 0.00, 0.05, "_"),
+        _phn_row("pau", 0.05, 0.10, "_"),
+        _phn_row("iy", 0.10, 0.20, "i"),
+        _phn_row("epi", 0.20, 0.25, "_"),
+        _phn_row("h#", 0.25, 0.30, "_"),
+    ]
+    out = prep._merge_adjacent_silence(rows)
+
+    assert [(r["min"], r["max"], r["ipa"]) for r in out] == [
+        (0.00, 0.10, "_"),
+        (0.10, 0.20, "i"),
+        (0.20, 0.30, "_"),
+    ]
+
+
 def test_add_phone_context_splits_diphthongs():
     """Diphthongs expand to their component phones for context lookup.
 
@@ -951,8 +970,8 @@ def test_evaluator_strict_vs_lenient():
     assert strict["precision"] == pytest.approx(2.0 / 3.0, abs=1e-5)
 
 
-def test_evaluator_strip_outer_silence_and_no_double_count():
-    """Leading/trailing SILENCE ('_') segments are always stripped, so 0/T is
+def test_evaluator_strip_one_outer_silence_and_no_double_count():
+    """One leading/trailing SILENCE ('_') segment is stripped, so 0/T is
     removed when it bounds silence and kept when the utterance begins/ends on
     a real phone. Adjacent segments' shared boundary is counted once."""
     from phonological_posteriogram.evaluation import (
@@ -992,6 +1011,18 @@ def test_evaluator_strip_outer_silence_and_no_double_count():
         "pred_counter": 0,
         "gt_counter": 0,
     }
+
+    # A run of predicted silence labels should not delete internal segmenter
+    # boundaries. Only the first and last silence bookends are stripped.
+    sil_run = [
+        SegmentationUnit(0.0, 0.1, "_"),
+        SegmentationUnit(0.1, 0.2, "_"),
+        SegmentationUnit(0.2, 0.3, "_"),
+        SegmentationUnit(0.3, 0.4, "_"),
+    ]
+    c_run = strip._get_boundary_counts(sil_run, sil_run)
+    assert c_run["pred_counter"] == 3  # {.1, .2, .3}
+    assert c_run["gt_counter"] == 3
 
 
 def test_evaluator_forced_mode_includes_pbe_and_symbol_breakdown():
