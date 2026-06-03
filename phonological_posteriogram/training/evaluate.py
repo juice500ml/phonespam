@@ -20,9 +20,9 @@ Run as::
         --split test
 
 For TIMIT, ``prepare_datasets`` writes both ``data/timit-merged.csv`` and
-``data/timit-dropped-closures.csv``. Use the merged CSV for evaluation
-ground truth; the dropped-closures CSV is intended for release-only training
-features.
+``data/timit-raw.csv``. Use the merged CSV for evaluation ground truth; the
+raw CSV is intended for training features (its closures feed the
+closure/release fit).
 """
 
 from __future__ import annotations

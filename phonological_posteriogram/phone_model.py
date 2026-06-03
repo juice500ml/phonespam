@@ -58,6 +58,11 @@ class PhoneModel:
         self.hparams = (
             dict(hparams) if hparams is not None else Segmenter.default_hparams()
         )
+        if (
+            hparams is None
+            and not {"closure+", "release+"}.issubset(self.posteriogram.featnames)
+        ):
+            self.hparams["drop_closure_release"] = False
         self.device = device
         self._encoder: Optional[SSLEncoder] = None
         self.recognizer = Recognizer(featnames=self.posteriogram.featnames)

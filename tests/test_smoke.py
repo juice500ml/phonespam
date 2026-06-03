@@ -44,14 +44,13 @@ def _make_view_state(in_dim=4, n_feat=3, featnames=None, pos_vecs=None):
 
 def _make_posteriogram_state(in_dim=4, n_feat=3, ipa_featnames=None,
                              ipa_pos_vecs=None):
+    W = np.zeros((in_dim, n_feat), dtype=np.float32)
+    W[: min(in_dim, n_feat), : min(in_dim, n_feat)] = np.eye(
+        min(in_dim, n_feat), dtype=np.float32
+    )
     return {
-        "views": {
-            "ipa": _make_view_state(in_dim, n_feat, ipa_featnames, ipa_pos_vecs),
-            "l_1": _make_view_state(in_dim, n_feat),
-            "r_1": _make_view_state(in_dim, n_feat),
-        },
-        "W_r1_to_ipa": np.eye(n_feat, dtype=np.float32),
-        "W_l1_to_ipa": np.eye(n_feat, dtype=np.float32),
+        "view": _make_view_state(in_dim, n_feat, ipa_featnames, ipa_pos_vecs),
+        "W_bwd": W,
     }
 
 
@@ -108,10 +107,10 @@ def _make_artifact(in_dim=4, n_feat=3):
     }
 
 
-def test_predict_silence_mask_requires_speech_plus():
+def test_predict_silence_mask_requires_silence_plus():
     post = _make_posteriogram(ipa_featnames=["a+", "b+", "c+"])
     feats = np.zeros((2, 4), dtype=np.float32)
-    with pytest.raises(ValueError, match="speech\\+"):
+    with pytest.raises(ValueError, match="silence\\+"):
         post.predict_silence_mask(feats)
 
 
@@ -158,9 +157,8 @@ def test_posteriogram_state_roundtrip():
     post = _make_posteriogram()
     reloaded = PhonologicalPosteriogram.from_state(post.to_state())
     assert reloaded.featnames == post.featnames
-    assert set(reloaded.views) == {"ipa", "l_1", "r_1"}
-    np.testing.assert_array_equal(reloaded.W_r1_to_ipa, post.W_r1_to_ipa)
-    np.testing.assert_array_equal(reloaded.W_l1_to_ipa, post.W_l1_to_ipa)
+    assert set(reloaded.views) == {"ipa"}
+    np.testing.assert_array_equal(reloaded.W_bwd, post.W_bwd)
 
 
 def test_posteriogram_project_activation():
@@ -204,9 +202,7 @@ def test_phone_model_save_and_load_roundtrip(tmp_path, monkeypatch):
     reloaded = PhoneModel.from_pretrained(out_dir)
     assert reloaded.net_spec == model.net_spec
     # Posteriogram weights survive the round-trip.
-    np.testing.assert_array_equal(
-        reloaded.posteriogram.W_r1_to_ipa, model.posteriogram.W_r1_to_ipa
-    )
+    np.testing.assert_array_equal(reloaded.posteriogram.W_bwd, model.posteriogram.W_bwd)
 
 
 def test_from_pretrained_accepts_file_path(tmp_path, monkeypatch):
@@ -454,7 +450,7 @@ def test_phone_model_embeds_recognizer(monkeypatch):
     embedded Recognizer carries no ``_frame_to_time`` attribute.
     """
     state = _make_posteriogram_state(in_dim=4)
-    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(monkeypatch, post, dict(NET_SPEC))
     assert isinstance(model.recognizer, Recognizer)
@@ -467,7 +463,7 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     from phonological_posteriogram.evaluation import SegmentationUnit
 
     state = _make_posteriogram_state(in_dim=4)
-    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(
         monkeypatch, post, NET_SPEC
@@ -499,14 +495,15 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     assert len(units) == 1
     assert units[0].label == "_"
     assert units[0].start == pytest.approx(0.0)
-    assert units[0].end == pytest.approx(0.6)  # frame 30 * 0.02
+    # recognize() extends the final segment to the actual waveform duration.
+    assert units[0].end == pytest.approx(1.0)
 
 
 def test_phone_model_recognize_dedup_optional(monkeypatch):
     """``dedup`` toggles consecutive same-label merging: True (default)
     collapses runs into one span; False preserves every segmenter boundary."""
     state = _make_posteriogram_state(in_dim=4)
-    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(monkeypatch, post, NET_SPEC)
     monkeypatch.setattr(
@@ -533,7 +530,7 @@ def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
     from phonological_posteriogram.evaluation import SegmentationUnit
 
     state = _make_posteriogram_state(in_dim=4)
-    state["views"]["ipa"]["pos_vecs"][0] = [10, 0, 0, 0]
+    state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(
         monkeypatch, post, NET_SPEC
@@ -582,9 +579,7 @@ def test_phone_model_recognize_resamples_with_warning(monkeypatch):
             resample_calls.append((orig_sr, target_sr, len(y)))
             return np.zeros(int(len(y) * target_sr / orig_sr), dtype=np.float32)
 
-    # The `import librosa` inside _coerce_waveform sees this module's
-    # sys.modules entry.
-    monkeypatch.setitem(__import__("sys").modules, "librosa", FakeLibrosa())
+    monkeypatch.setattr(pm, "librosa", FakeLibrosa())
     monkeypatch.setattr(
         model, "extract_features",
         lambda w: np.zeros((5, 4), dtype=np.float32),
@@ -642,30 +637,32 @@ def test_phone_model_segmenter_hparam_override(monkeypatch):
     hparams is cheap and shares the (expensive) posteriogram weights."""
     model = _make_phone_model(monkeypatch, _make_posteriogram(), dict(NET_SPEC))
     seg_a = model.segmenter()
-    seg_b = model.segmenter({"drop_k": 0})
+    seg_b = model.segmenter({"combined_prominence": 0.25})
 
     assert seg_a.posteriogram is seg_b.posteriogram  # weights not copied
-    assert seg_b.hparams["drop_k"] == 0
-    assert seg_a.hparams["drop_k"] == Segmenter.default_hparams()["drop_k"]
+    assert seg_b.hparams["combined_prominence"] == 0.25
+    assert (
+        seg_a.hparams["combined_prominence"]
+        == Segmenter.default_hparams()["combined_prominence"]
+    )
 
 
 def test_segmenter_default_hparams_self_consistent():
     h = Segmenter.default_hparams()
     for spec in h["combined_signals"]:
         assert set(spec) == {"name", "kwargs", "shift"}
-    assert set(h["single_signal"]) == {"name", "kwargs", "shift"}
     assert "mel_frame_shift_ms" in h
     assert h["activation"] in ("none", "sigmoid")
-    assert h["combine_method"] in ("min", "logmeanexp")
     assert h["distance"] in ("cosine", "l2")
+    assert isinstance(h["combined_prominence"], float)
 
 
 def test_segmenter_hparams_merge_onto_defaults():
     """A partial hparams dict still yields a complete config (missing keys
     filled from default_hparams)."""
     post = _make_posteriogram()
-    seg = Segmenter(post, sr=16000, hparams={"drop_k": 1})
-    assert seg.hparams["drop_k"] == 1
+    seg = Segmenter(post, sr=16000, hparams={"combined_prominence": 0.01})
+    assert seg.hparams["combined_prominence"] == 0.01
     assert seg.hparams["activation"] == "none"  # filled from defaults
     assert "combined_signals" in seg.hparams
 
@@ -683,34 +680,13 @@ def test_segmenter_combines_duplicate_signal_specs():
                 {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 0},
                 {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 0},
             ],
-            "drop_k": 0,
+            "drop_closure_release": False,
             "snap_silence": False,
         },
     )
     feats = np.random.default_rng(0).normal(size=(30, 4)).astype(np.float32)
     preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
     assert isinstance(preds, np.ndarray)
-
-
-@pytest.mark.parametrize("combine_method", ["min", "logmeanexp"])
-def test_segmenter_combine_method_hparam(combine_method):
-    """Both combine methods run through segment()."""
-    post = _make_posteriogram(in_dim=4, n_feat=3)
-    seg = Segmenter(
-        post,
-        sr=16000,
-        hparams={"combine_method": combine_method, "snap_silence": False},
-    )
-    feats = np.random.default_rng(1).normal(size=(30, 4)).astype(np.float32)
-    preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
-    assert isinstance(preds, np.ndarray)
-
-
-def test_segmenter_rejects_unknown_combine_method():
-    from phonological_posteriogram.segmenter import _combine_stacked
-
-    with pytest.raises(ValueError, match="combine_method"):
-        _combine_stacked(np.ones((2, 5)), "bogus")
 
 
 def test_pair_distance_methods():
@@ -739,29 +715,15 @@ def test_segmenter_distance_hparam(distance):
     seg = Segmenter(
         post,
         sr=16000,
-        hparams={"distance": distance, "snap_silence": False},
+        hparams={
+            "distance": distance,
+            "drop_closure_release": False,
+            "snap_silence": False,
+        },
     )
     feats = np.random.default_rng(2).normal(size=(30, 4)).astype(np.float32)
     preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
     assert isinstance(preds, np.ndarray)
-
-
-def test_normalize_signal_methods():
-    from phonological_posteriogram.segmenter import _normalize_signal
-
-    sig = np.array([2.0, 4.0, 6.0])
-    # "none" passes the values through unchanged (but copies).
-    out_none = _normalize_signal(sig, "none")
-    np.testing.assert_array_equal(out_none, sig)
-    assert out_none is not sig
-    # "min" subtracts the minimum.
-    np.testing.assert_array_equal(_normalize_signal(sig, "min"), [0, 2, 4])
-    # "minmax" rescales to [0, 1].
-    np.testing.assert_allclose(_normalize_signal(sig, "minmax"), [0, 0.5, 1])
-
-    with pytest.raises(ValueError, match="norm_method"):
-        _normalize_signal(sig, "bogus")
-
 
 def _phn_row(timit_phn, mn, mx, ipa, audio="u.wav"):
     """Build a minimal pre-merge TIMIT row dict (matches _prepare_timit)."""
@@ -1428,18 +1390,29 @@ def _make_synthetic_features_pkl(tmp_path):
 
     rows = []
     for utt in ("u1.wav", "u2.wav"):
-        # Phone sequence with silence padding so "_" appears in the vocab.
-        seq = ["_", "p", "i", "t", "_"]
-        for i, ipa in enumerate(seq):
+        # Phone sequence with silence padding so "_" appears in the vocab. A
+        # closure (tcl) precedes the t release so the TIMIT closure/release
+        # fit sees both a _cl and a _rl label.
+        seq = [
+            ("h#", "_"),
+            ("p", "p"),
+            ("iy", "i"),
+            ("tcl", np.nan),
+            ("t", "t"),
+            ("h#", "_"),
+        ]
+        for i, (timit_phn, ipa) in enumerate(seq):
             rows.append(
                 {
                     "audio_path": utt,
                     "min": i * 0.10,
                     "max": (i + 1) * 0.10,
+                    "timit_phn": timit_phn,
                     "ipa": ipa,
-                    "l_1": seq[i - 1] if i > 0 else None,
-                    "r_1": seq[i + 1] if i < len(seq) - 1 else None,
+                    "l_1": seq[i - 1][1] if i > 0 else None,
+                    "r_1": seq[i + 1][1] if i < len(seq) - 1 else None,
                     "feat": rng.normal(size=in_dim).astype(np.float32),
+                    "split": "train",
                 }
             )
 
@@ -1533,9 +1506,21 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
     grid_path.write_text(
         json.dumps(
             [
-                {"drop_k": 0, "snap_silence": False},
-                {"drop_k": 1, "snap_silence": False},
-                {"drop_k": 2, "snap_silence": False},
+                {
+                    "combined_prominence": 0.001,
+                    "drop_closure_release": False,
+                    "snap_silence": False,
+                },
+                {
+                    "combined_prominence": 0.01,
+                    "drop_closure_release": False,
+                    "snap_silence": False,
+                },
+                {
+                    "combined_prominence": 0.1,
+                    "drop_closure_release": False,
+                    "snap_silence": False,
+                },
             ]
         )
     )
@@ -1657,7 +1642,18 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
         }
     ).to_csv(csv_path, index=False)
     grid_path = tmp_path / "grid.json"
-    grid_path.write_text(json.dumps([{"drop_k": 0}, {"drop_k": 1}]))
+    grid_path.write_text(
+        json.dumps(
+            [
+                {"drop_closure_release": False, "snap_silence": False},
+                {
+                    "combined_prominence": 0.01,
+                    "drop_closure_release": False,
+                    "snap_silence": False,
+                },
+            ]
+        )
+    )
 
     model = _make_phone_model(
         monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC)

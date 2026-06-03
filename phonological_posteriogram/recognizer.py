@@ -233,15 +233,16 @@ class Recognizer:
             + [f"{n}-" for n in panphon_names]
         )
         name_to_full_idx = {n: i for i, n in enumerate(full_featnames)}
-        missing = [n for n in featnames if n not in name_to_full_idx]
+        state_names = {"closure+", "closure-", "release+", "release-"}
+        missing = [
+            n for n in featnames
+            if n not in name_to_full_idx and n not in state_names
+        ]
         if missing:
             raise ValueError(
                 "Featnames not derivable from panphon's feature table: "
                 f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
             )
-        idx_in_full = np.asarray(
-            [name_to_full_idx[n] for n in featnames], dtype=np.int64
-        )
 
         vocab = ["_"]
         rows = [[1] + [0] * (len(panphon_names) * 2)]
@@ -256,7 +257,13 @@ class Recognizer:
                 )
         full_predmat = np.asarray(rows, dtype=np.float32)
 
-        predmat = full_predmat[:, idx_in_full]
+        predmat_cols = []
+        for name in featnames:
+            if name in name_to_full_idx:
+                predmat_cols.append(full_predmat[:, name_to_full_idx[name]])
+            else:
+                predmat_cols.append(np.zeros(len(full_predmat), dtype=np.float32))
+        predmat = np.stack(predmat_cols, axis=1)
         sums = predmat.sum(1, keepdims=True)
         sums = np.where(sums > 0, sums, 1.0)
         return vocab, predmat / sums

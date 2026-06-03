@@ -2,9 +2,10 @@
 
 Reads a pickled DataFrame produced by ``training/extract_features.py`` (its
 ``df.attrs`` carries ``hf_repo``, ``encoder_layer``, ``pool``, ``sr``), fits
-the three phonological-vector views and the two forward/backward regressors,
-wraps them in a :class:`PhoneModel`, and saves the artifact so it can be
-reloaded with ``PhoneModel.from_pretrained``.
+the ``ipa`` phonological-vector view and the backward regressor under the
+notebook's TIMIT closure/release label scheme, wraps them in a
+:class:`PhoneModel`, and saves the artifact so it can be reloaded with
+``PhoneModel.from_pretrained``.
 
 Run as::
 
@@ -50,6 +51,15 @@ def _get_args(argv=None):
         help="Filename for the saved artifact (within --output_dir).",
     )
     parser.add_argument(
+        "--split",
+        default="train",
+        choices=("train", "test", "both"),
+        help=(
+            "Feature split to fit on when the pickle contains a split column. "
+            "Use train for release artifacts."
+        ),
+    )
+    parser.add_argument(
         "--mel_frame_shift_ms",
         type=int,
         default=10,
@@ -74,8 +84,16 @@ def run(args):
             "Re-run training/extract_features.py to regenerate it."
         )
 
-    # The expensive step: fit the weights-only PhonologicalPosteriogram.
-    posteriogram = PhonologicalPosteriogram.fit(df)
+    if args.split != "both":
+        if "split" not in df.columns:
+            raise ValueError(
+                "--split was set but the features pickle has no `split` column."
+            )
+        df = df[df.split == args.split].reset_index(drop=True)
+
+    # The expensive step: fit the weights-only PhonologicalPosteriogram on the
+    # notebook's TIMIT closure/release label scheme from raw TIMIT features.
+    posteriogram = PhonologicalPosteriogram.fit_timit_closure_release(df)
 
     net_spec = {
         "hf_repo": attrs["hf_repo"],

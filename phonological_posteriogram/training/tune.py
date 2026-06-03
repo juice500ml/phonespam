@@ -37,8 +37,8 @@ Run as::
         --hparams_json grid.json
 
 For TIMIT, ``prepare_datasets`` writes both ``data/timit-merged.csv`` and
-``data/timit-dropped-closures.csv``. Tune/evaluate against the merged CSV;
-use the dropped-closures CSV for release-only training features.
+``data/timit-raw.csv``. Tune/evaluate against the merged CSV; use the raw CSV
+for training features (its closures feed the closure/release fit).
 """
 
 from __future__ import annotations
@@ -314,39 +314,30 @@ def run(args):
     kwargs_known = _resolve_known_lang_kwargs(df, list(cache.keys()))
 
     lower_better = args.metric in LOWER_IS_BETTER
-    failed_score = float("inf") if lower_better else float("-inf")
-
     # Cheap step — sweep hparams over the cached features. The recognizer
     # (and its predmat) is the model's embedded one; vocab masks are
     # applied per-call, so the sweep doesn't rebuild them.
     results = []
     for i, overrides in enumerate(hparam_list):
-        try:
-            metrics = _score_hparams(
-                model, overrides, kwargs_known,
-                cache, ground_truth,
-                seg_evaluator, rec_evaluator,
-                dedup=args.dedup,
-            )
-            score = float(metrics.get(args.metric, failed_score))
-            results.append(
-                {"index": i, "overrides": overrides, "score": score,
-                 "metrics": metrics}
-            )
-            print(
-                f"[{i:3d}] rval={metrics.get('unknown_rval', failed_score):.4f}  "
-                f"precision={metrics.get('unknown_precision', float('nan')):.4f}  "
-                f"recall={metrics.get('unknown_recall', float('nan')):.4f}  "
-                f"pfer={metrics.get('unknown_pfer', float('nan')):.4f}  "
-                f"pfer (known)={metrics.get('known_pfer', float('nan')):.4f}  "
-                f"{overrides}"
-            )
-        except Exception as exc:  # one bad config shouldn't kill the sweep
-            print(f"[{i:3d}] FAILED: {exc}", file=sys.stderr)
-            results.append(
-                {"index": i, "overrides": overrides,
-                 "score": failed_score, "error": str(exc)}
-            )
+        metrics = _score_hparams(
+            model, overrides, kwargs_known,
+            cache, ground_truth,
+            seg_evaluator, rec_evaluator,
+            dedup=args.dedup,
+        )
+        score = float(metrics[args.metric])
+        results.append(
+            {"index": i, "overrides": overrides, "score": score,
+             "metrics": metrics}
+        )
+        print(
+            f"[{i:3d}] rval={metrics['unknown_rval']:.4f}  "
+            f"precision={metrics['unknown_precision']:.4f}  "
+            f"recall={metrics['unknown_recall']:.4f}  "
+            f"pfer={metrics['unknown_pfer']:.4f}  "
+            f"pfer (known)={metrics['known_pfer']:.4f}  "
+            f"{overrides}"
+        )
 
     results.sort(key=lambda r: r["score"], reverse=not lower_better)
     best = results[0]

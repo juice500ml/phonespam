@@ -104,23 +104,13 @@ def _delta(proj, offset, distance="cosine"):
     return delta
 
 
-def _fwd_contrast(proj_ipa, proj_r1, W_r1_to_ipa, lookahead, distance="cosine"):
-    T = proj_ipa.shape[0]
-    fwd_proj = proj_r1 @ W_r1_to_ipa
-    contrast = np.full(T, np.nan)
-    if T <= lookahead:
-        return contrast
-    n = T - lookahead
-    fp = fwd_proj[:n]
-    contrast[:n] = _pair_distance(fp, proj_ipa[:n], distance) - _pair_distance(
-        fp, proj_ipa[lookahead:], distance
-    )
-    return contrast
+def _bwd_contrast(proj_ipa, bwd_proj, lookbehind, distance="cosine"):
+    """dist(bwd_proj[u], ipa[u]) - dist(bwd_proj[u], ipa[u-lookbehind]).
 
-
-def _bwd_contrast(proj_ipa, proj_l1, W_l1_to_ipa, lookbehind, distance="cosine"):
+    ``bwd_proj = feats @ W_bwd`` is the regressor's guess of the *preceding*
+    phone's projection.
+    """
     T = proj_ipa.shape[0]
-    bwd_proj = proj_l1 @ W_l1_to_ipa
     contrast = np.full(T, np.nan)
     if T <= lookbehind:
         return contrast
@@ -131,58 +121,20 @@ def _bwd_contrast(proj_ipa, proj_l1, W_l1_to_ipa, lookbehind, distance="cosine")
     return contrast
 
 
-NORM_METHODS = ("none", "min", "minmax")
+# Fixed (utterance-invariant) lower bound per signal family, subtracted so
+# every component is >= 0 before the product. A cosine distance is in [0, 2];
+# a contrast is a difference of two cosine distances in [-2, 2]; mel_svf is
+# already min-max normalised to [0, 1].
+SIGNAL_FAMILY_FLOOR = {
+    "frame_delta": 0.0,
+    "bwd_contrast": -2.0,
+    "mel_svf": 0.0,
+}
 
 
-def _normalize_signal(signal, method):
-    """Normalize one per-frame signal before stacking.
-
-    ``"none"``: pass through unchanged. ``"min"``: subtract the (nan-)min so
-    the lowest finite value is 0. ``"minmax"``: rescale finite values to
-    [0, 1].
-    """
-    if method == "none":
-        return np.asarray(signal, dtype=float).copy()
-    if method == "min":
-        return signal - np.nanmin(signal)
-    if method == "minmax":
-        sig = np.asarray(signal, dtype=float).copy()
-        finite = np.isfinite(sig)
-        if finite.sum() < 2:
-            return sig
-        lo, hi = sig[finite].min(), sig[finite].max()
-        if hi > lo:
-            sig[finite] = (sig[finite] - lo) / (hi - lo)
-        else:
-            sig[finite] = 0.0
-        return sig
-    raise ValueError(
-        f"Unknown norm_method {method!r}; choose one of {NORM_METHODS}."
-    )
-
-
-COMBINE_METHODS = ("min", "logmeanexp", "mean")
-
-
-def _combine_stacked(stacked, method):
-    """Combine the stacked per-frame signals into one signal.
-
-    ``"min"``: product over signals — a fuzzy-AND that stays at or below the
-    per-frame minimum. ``"logmeanexp"``: geometric mean, exp(mean(log(.))) —
-    a softer consensus.
-    """
-    if method == "min":
-        return np.prod(stacked, axis=0)
-    if method == "logmeanexp":
-        with np.errstate(invalid="ignore"):
-            return np.exp(
-                np.mean(np.log(np.maximum(stacked, 1e-12)), axis=0)
-            )
-    if method == "mean":
-        return np.mean(stacked, axis=0)
-    raise ValueError(
-        f"Unknown combine_method {method!r}; choose one of {COMBINE_METHODS}."
-    )
+def _fixed_floor_norm(signal, family):
+    """Shift a component to its theoretical floor so it is non-negative."""
+    return signal - SIGNAL_FAMILY_FLOOR[family]
 
 
 def _copy_spec(spec):
@@ -224,46 +176,39 @@ class Segmenter:
 
     # A "signal spec" is a dict {"name", "kwargs", "shift"}. ``combined_signals``
     # is a *list* of specs, so the same signal type may appear more than once
-    # with different kwargs (e.g. two fwd_contrast at different lookaheads).
+    # with different kwargs (e.g. frame_delta at three window widths). Each
+    # component is shifted to its theoretical floor (SIGNAL_FAMILY_FLOOR) so it
+    # is non-negative, and the components are multiplied — a fuzzy-AND boundary
+    # signal. The default is the notebook's best config:
+    # frame_delta(3 widths) + bwd_contrast(3 widths) + mel_svf.
     DEFAULT_COMBINED_SIGNALS = (
+        {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2},
         {"name": "frame_delta", "kwargs": {"offset": 2}, "shift": 1},
-        {"name": "fwd_delta", "kwargs": {"offset": 2}, "shift": 1},
-        {"name": "bwd_delta", "kwargs": {"offset": 1}, "shift": 1},
-        {"name": "fwd_contrast", "kwargs": {"lookahead": 1}, "shift": 1},
+        {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 1},
         {"name": "bwd_contrast", "kwargs": {"lookbehind": 2}, "shift": -1},
+        {"name": "bwd_contrast", "kwargs": {"lookbehind": 3}, "shift": -1},
+        {"name": "bwd_contrast", "kwargs": {"lookbehind": 1}, "shift": 0},
         {"name": "mel_svf", "kwargs": {"left": 1, "right": 2}, "shift": 1},
     )
-    DEFAULT_SINGLE_SIGNAL = {
-        "name": "fwd_contrast",
-        "kwargs": {"lookahead": 1},
-        "shift": 1,
-    }
-    COMBINED_DROP_K = 2
     COMBINED_PROMINENCE = 0.001
-    SINGLE_PROMINENCE = 0.2
 
     @classmethod
     def default_hparams(cls):
         return {
-            "use_combined": True,
             "combined_signals": [
                 _copy_spec(s) for s in cls.DEFAULT_COMBINED_SIGNALS
             ],
-            "drop_k": cls.COMBINED_DROP_K,
             "combined_prominence": cls.COMBINED_PROMINENCE,
-            # How each signal is normalized before stacking
-            # ("none"/"min"/"minmax")...
-            "norm_method": "min",
-            # ...and how the stacked signals are combined ("min"/"logmeanexp").
-            "combine_method": "min",
             # Activation applied to the phonological-vector projections that
             # feed the boundary signals: "none" (raw) or "sigmoid".
             "activation": "none",
-            "single_signal": _copy_spec(cls.DEFAULT_SINGLE_SIGNAL),
-            "single_signal_prominence": cls.SINGLE_PROMINENCE,
             # Pairwise distance for all distance-based signals
             # (frame_delta, fwd/bwd contrast, mel_svf): "cosine" or "l2".
             "distance": "cosine",
+            # Drop predicted boundaries at a stop/affricate closure->release
+            # transition (closure+ before, release+ after, both > threshold).
+            "drop_closure_release": True,
+            "closure_release_threshold": 0.5,
             "snap_silence": True,
             "snap_tolerance": 2,
             "silence_threshold": 0.5,
@@ -276,6 +221,12 @@ class Segmenter:
         # Merge onto defaults so a partial dict (or an artifact saved before
         # a new hparam was added) still yields a complete config.
         self.hparams = {**self.default_hparams(), **(hparams or {})}
+        if (
+            hparams is not None
+            and "drop_closure_release" not in hparams
+            and not {"closure+", "release+"}.issubset(posteriogram.featnames)
+        ):
+            self.hparams["drop_closure_release"] = False
 
     def with_hparams(self, hparams_override):
         """Return a copy with ``hparams_override`` merged on top.
@@ -288,29 +239,20 @@ class Segmenter:
             hparams={**self.hparams, **hparams_override},
         )
 
-    def _signal(self, name, proj_ipa, proj_r1, proj_l1, waveform_np, kwargs):
+    def _signal(
+        self,
+        name,
+        proj_ipa,
+        bwd_proj,
+        waveform_np,
+        kwargs,
+    ):
         distance = self.hparams["distance"]
         if name == "frame_delta":
             return _delta(proj_ipa, kwargs["offset"], distance=distance)
-        if name == "fwd_delta":
-            return _delta(proj_r1, kwargs["offset"], distance=distance)
-        if name == "bwd_delta":
-            return _delta(proj_l1, kwargs["offset"], distance=distance)
-        if name == "fwd_contrast":
-            return _fwd_contrast(
-                proj_ipa,
-                proj_r1,
-                self.posteriogram.W_r1_to_ipa,
-                kwargs["lookahead"],
-                distance=distance,
-            )
         if name == "bwd_contrast":
             return _bwd_contrast(
-                proj_ipa,
-                proj_l1,
-                self.posteriogram.W_l1_to_ipa,
-                kwargs["lookbehind"],
-                distance=distance,
+                proj_ipa, bwd_proj, kwargs["lookbehind"], distance=distance
             )
         if name == "mel_svf":
             return _mel_svf_signal(
@@ -324,67 +266,64 @@ class Segmenter:
             )
         raise ValueError(f"Unknown signal: {name}")
 
-    def _signal_from_spec(self, spec, proj_ipa, proj_r1, proj_l1, waveform_np):
+    def _signal_from_spec(
+        self,
+        spec,
+        proj_ipa,
+        bwd_proj,
+        waveform_np,
+    ):
         """Compute one shifted signal from a {name, kwargs, shift} spec."""
         sig = self._signal(
             spec["name"],
             proj_ipa,
-            proj_r1,
-            proj_l1,
+            bwd_proj,
             waveform_np,
             kwargs=spec.get("kwargs", {}),
         )
         return _shift_signal(sig, spec.get("shift", 0))
 
-    def _combined_signal(self, proj_ipa, proj_r1, proj_l1, waveform_np):
+    def _combined_signal(
+        self,
+        proj_ipa,
+        bwd_proj,
+        waveform_np,
+    ):
+        """Fixed-floor product of the per-spec signals (fuzzy-AND)."""
         h = self.hparams
-        norm = h["norm_method"]
         components = [
-            _normalize_signal(
+            _fixed_floor_norm(
                 self._signal_from_spec(
-                    spec, proj_ipa, proj_r1, proj_l1, waveform_np
+                    spec,
+                    proj_ipa,
+                    bwd_proj,
+                    waveform_np,
                 ),
-                norm,
+                spec["name"],
             )
             for spec in h["combined_signals"]
         ]
-
         stacked = np.stack(components, axis=0)
-        if h["drop_k"] >= len(stacked):
-            raise ValueError(
-                f"drop_k={h['drop_k']} is >= the number of combined signals "
-                f"({len(stacked)}); nothing would be left to combine."
-            )
-        if h["drop_k"] > 0:
-            stacked = np.sort(stacked, axis=0)[h["drop_k"] :]
-        return _combine_stacked(stacked, h["combine_method"])
+        with np.errstate(invalid="ignore"):
+            return np.prod(stacked, axis=0)
 
-    def segment(
-        self, net_feats, waveform_np, use_combined=None, snap_silence=None
-    ):
+    def segment(self, net_feats, waveform_np, snap_silence=None):
         h = self.hparams
-        if use_combined is None:
-            use_combined = h["use_combined"]
         if snap_silence is None:
             snap_silence = h["snap_silence"]
 
         act = h["activation"]
         proj_ipa = self.posteriogram.project(net_feats, view="ipa", act=act)
-        proj_r1 = self.posteriogram.project(net_feats, view="r_1", act=act)
-        proj_l1 = self.posteriogram.project(net_feats, view="l_1", act=act)
+        bwd_proj = net_feats @ self.posteriogram.W_bwd
 
-        if use_combined:
-            signal = self._combined_signal(
-                proj_ipa, proj_r1, proj_l1, waveform_np
-            )
-            prominence = h["combined_prominence"]
-        else:
-            signal = self._signal_from_spec(
-                h["single_signal"], proj_ipa, proj_r1, proj_l1, waveform_np
-            )
-            prominence = h["single_signal_prominence"]
+        signal = self._combined_signal(
+            proj_ipa, bwd_proj, waveform_np
+        )
+        preds = find_peaks(signal, prominence=h["combined_prominence"])[0]
 
-        preds = find_peaks(signal, prominence=prominence)[0]
+        if h["drop_closure_release"]:
+            preds = self._drop_closure_release_peaks(preds, proj_ipa)
+
         if snap_silence:
             silence_mask = self.posteriogram.predict_silence_mask(
                 net_feats, threshold=h["silence_threshold"]
@@ -394,6 +333,31 @@ class Segmenter:
             )
 
         return preds
+
+    def _drop_closure_release_peaks(self, preds, proj_ipa):
+        """Drop predicted boundaries that fall on a closure->release merge.
+
+        TIMIT writes stops/affricates as closure + release; the projection's
+        ``closure+`` / ``release+`` channels detect them. A peak whose
+        preceding frame is closure-like and whose own frame is release-like is
+        an internal stop boundary, not a phone boundary, so it is dropped.
+        """
+        thr = self.hparams["closure_release_threshold"]
+        featnames = self.posteriogram.featnames
+        closure_idx = featnames.index("closure+")
+        release_idx = featnames.index("release+")
+        keep = []
+        for peak in preds:
+            if peak <= 0 or peak >= len(proj_ipa):
+                keep.append(peak)
+                continue
+            if (
+                proj_ipa[peak - 1, closure_idx] > thr
+                and proj_ipa[peak, release_idx] > thr
+            ):
+                continue
+            keep.append(peak)
+        return np.asarray(keep, dtype=preds.dtype)
 
     def _handle_silence(self, preds, silence_mask, snap_tolerance=1):
         """Suppress peaks inside silence and snap nearby peaks to silence

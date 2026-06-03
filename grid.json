@@ -1,0 +1,20 @@
+[
+  {
+    "combined_signals": [
+      {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2},
+      {"name": "frame_delta", "kwargs": {"offset": 2}, "shift": 1},
+      {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 1},
+      {"name": "bwd_contrast", "kwargs": {"lookbehind": 2}, "shift": -1},
+      {"name": "bwd_contrast", "kwargs": {"lookbehind": 3}, "shift": -1},
+      {"name": "bwd_contrast", "kwargs": {"lookbehind": 1}, "shift": 0},
+      {"name": "mel_svf", "kwargs": {"left": 1, "right": 2}, "shift": 1}
+    ]
+  },
+  {
+    "combined_signals": [
+      {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 1},
+      {"name": "frame_delta", "kwargs": {"offset": 2}, "shift": 1},
+      {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2}
+    ]
+  }
+]

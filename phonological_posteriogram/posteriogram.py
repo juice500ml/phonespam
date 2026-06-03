@@ -3,10 +3,9 @@
 :class:`PhonologicalPosteriogram` holds everything that is expensive to fit
 and never changes once trained:
 
-- three phonological-vector "views" — ``ipa`` (current phone), ``l_1``
-  (preceding phone), ``r_1`` (following phone),
-- the two linear regressors ``W_r1_to_ipa`` / ``W_l1_to_ipa`` that map the
-  ``r_1`` / ``l_1`` projections into the ``ipa`` projection space.
+- the ``ipa`` phonological-vector view,
+- the linear regressor ``W_bwd`` that maps raw SSL features onto the ``ipa``
+  projection of the preceding phone.
 
 Algorithm classes (``Segmenter``, and later ``Recognizer``) are constructed
 on top of a fitted ``PhonologicalPosteriogram`` and carry only
@@ -19,7 +18,16 @@ from __future__ import annotations
 import numpy as np
 import panphon
 
-VIEWS = ("ipa", "l_1", "r_1")
+_CR_CLOSURE_TO_STOP = {
+    "pcl": "p",
+    "tcl": "t",
+    "kcl": "k",
+    "bcl": "b",
+    "dcl": "d",
+    "gcl": "ɡ",
+}
+_CR_RELEASE_IPA = {"p", "t", "k", "b", "d", "ɡ", "t͡ʃ", "d͡ʒ"}
+_CR_DIPHTHONGS = {"aɪ", "aʊ", "eɪ", "oʊ", "ɔɪ"}
 
 
 def _fill_gaps(raw_mask):
@@ -48,9 +56,7 @@ def _apply_activation(raw, act):
 class _VectorView:
     """One phonological-vector view: per-feature pos/zero vectors + calibration.
 
-    A view is fit by grouping the per-phone training rows on a single label
-    column (``ipa``, ``l_1``, or ``r_1``). Internal to
-    :class:`PhonologicalPosteriogram`; not part of the public API.
+    Internal to :class:`PhonologicalPosteriogram`; not part of the public API.
     """
 
     def __init__(self, *, featnames, featmap, pos_vecs, zero_vecs, scales, biases):
@@ -65,9 +71,19 @@ class _VectorView:
     # -- fitting ---------------------------------------------------------- #
 
     @classmethod
-    def fit(cls, df, vocab, group_col, filter_features=True):
+    def fit(
+        cls,
+        df,
+        vocab,
+        group_col,
+        filter_features=True,
+        prep_featmap=None,
+    ):
         ft = panphon.FeatureTable()
-        featnames, featmap = cls._prep_featmap(vocab, ft)
+        if prep_featmap is None:
+            featnames, featmap = cls._prep_featmap(vocab, ft)
+        else:
+            featnames, featmap = prep_featmap(vocab, ft)
         pos_vecs, zero_vecs, scales, biases = cls._calc_phnvectors(
             df, group_col, featnames, featmap
         )
@@ -159,7 +175,8 @@ class _VectorView:
 
         Dead: no phones in the + or 0 class. Degenerate: the +/0 partition
         is identical to ``silence+`` (i.e. just a silence detector). ``silence+``
-        itself is always kept.
+        itself is always kept — it is the silence channel the segmenter
+        thresholds in :meth:`PhonologicalPosteriogram.predict_silence_mask`.
         """
         silence_pos, silence_zero = self._split_phns(
             "silence+", self.featnames, self.featmap
@@ -223,40 +240,48 @@ class _VectorView:
 
 
 class PhonologicalPosteriogram:
-    """Fitted phonological-vector projections for an SSL encoder.
+    """Fitted phonological-vector projection for an SSL encoder.
 
-    Bundles the three views (``ipa``/``l_1``/``r_1``) and the two regressors.
     Construct with :meth:`fit` (the one expensive training step) or
-    :meth:`from_state`; query with :meth:`project` (``act='none'`` for the
-    raw projection, ``act='sigmoid'`` for the posteriogram).
+    :meth:`from_state`; query with :meth:`project` (``act='none'`` for the raw
+    projection, ``act='sigmoid'`` for the posteriogram).
     """
 
-    def __init__(self, *, views, W_r1_to_ipa, W_l1_to_ipa):
-        missing = set(VIEWS) - set(views)
-        assert not missing, f"PhonologicalPosteriogram missing views: {missing}"
-        self.views = dict(views)
-        self.W_r1_to_ipa = np.asarray(W_r1_to_ipa)
-        self.W_l1_to_ipa = np.asarray(W_l1_to_ipa)
+    def __init__(self, *, view, W_bwd):
+        self.views = {"ipa": view}
+        # Raw-feature regressor: a frame's SSL features predict the ipa-view
+        # projection of the preceding phone.
+        self.W_bwd = np.asarray(W_bwd)
 
     # -- fitting ---------------------------------------------------------- #
 
     @classmethod
-    def fit(cls, train_df, *, filter_features=True):
-        """Fit the three views and both regressors from per-phone features.
+    def fit(
+        cls,
+        train_df,
+        *,
+        filter_features=True,
+        group_col: str = "ipa",
+        vocab=None,
+        prep_featmap=None,
+    ):
+        """Fit the ipa view and backward regressor from per-phone features.
 
         ``train_df`` needs columns ``feat`` (per-phone SSL feature vector),
-        ``ipa`` / ``l_1`` / ``r_1`` (phone labels), and ``audio_path`` / ``min``
-        (to order phones within each utterance for the regressors).
+        ``group_col`` (phone labels), and ``audio_path`` / ``min`` (to order
+        phones within each utterance for the regressor).
         """
-        labeled = train_df[~train_df.ipa.isna()]
-        vocab = labeled.ipa.unique().tolist()
+        labeled = train_df[~train_df[group_col].isna()]
+        if vocab is None:
+            vocab = labeled[group_col].unique().tolist()
 
-        views = {
-            name: _VectorView.fit(
-                labeled, vocab, group_col=name, filter_features=filter_features
-            )
-            for name in VIEWS
-        }
+        view = _VectorView.fit(
+            labeled,
+            vocab,
+            group_col=group_col,
+            filter_features=filter_features,
+            prep_featmap=prep_featmap,
+        )
 
         df_sorted = labeled.sort_values(["audio_path", "min"])
         same_utt = (
@@ -266,21 +291,29 @@ class PhonologicalPosteriogram:
         prev_feats = np.stack(df_sorted.feat.values[:-1][same_utt])
         curr_feats = np.stack(df_sorted.feat.values[1:][same_utt])
 
-        # Regressors are fit on the raw (un-activated) projections.
-        proj_ipa_curr = views["ipa"].project(curr_feats, act="none")
-        proj_ipa_prev = views["ipa"].project(prev_feats, act="none")
-        proj_r1_prev = views["r_1"].project(prev_feats, act="none")
-        proj_l1_next = views["l_1"].project(curr_feats, act="none")
+        # W_bwd: current frame's raw SSL features -> previous phone's ipa
+        # projection, fit on the raw (un-activated) projection.
+        proj_ipa_prev = view.project(prev_feats, act="none")
+        W_bwd = np.linalg.lstsq(curr_feats, proj_ipa_prev, rcond=None)[0]
 
-        W_r1_to_ipa = np.linalg.lstsq(
-            proj_r1_prev, proj_ipa_curr, rcond=None
-        )[0]
-        W_l1_to_ipa = np.linalg.lstsq(
-            proj_l1_next, proj_ipa_prev, rcond=None
-        )[0]
+        return cls(view=view, W_bwd=W_bwd)
 
-        return cls(
-            views=views, W_r1_to_ipa=W_r1_to_ipa, W_l1_to_ipa=W_l1_to_ipa
+    @classmethod
+    def fit_timit_closure_release(cls, train_df, *, filter_features=True):
+        """Fit the notebook's TIMIT closure/release feature scheme.
+
+        Raw TIMIT intervals retain stop closures that merged evaluation labels
+        drop. The fitted labels distinguish closure/release state while
+        preserving the ordinary IPA feature geometry.
+        """
+        df = _add_timit_closure_release_labels(train_df)
+        vocab = sorted(df.cr_ipa.unique())
+        return cls.fit(
+            df,
+            filter_features=filter_features,
+            group_col="cr_ipa",
+            vocab=vocab,
+            prep_featmap=_prep_timit_closure_release_featmap,
         )
 
     # -- projection ------------------------------------------------------- #
@@ -322,18 +355,78 @@ class PhonologicalPosteriogram:
 
     def to_state(self):
         return {
-            "views": {name: v.to_state() for name, v in self.views.items()},
-            "W_r1_to_ipa": self.W_r1_to_ipa,
-            "W_l1_to_ipa": self.W_l1_to_ipa,
+            "view": self.views["ipa"].to_state(),
+            "W_bwd": self.W_bwd,
         }
 
     @classmethod
     def from_state(cls, state):
+        missing = {"view", "W_bwd"} - set(state)
+        assert not missing, f"posteriogram state missing regressors: {missing}"
         return cls(
-            views={
-                name: _VectorView.from_state(s)
-                for name, s in state["views"].items()
-            },
-            W_r1_to_ipa=state["W_r1_to_ipa"],
-            W_l1_to_ipa=state["W_l1_to_ipa"],
+            view=_VectorView.from_state(state["view"]),
+            W_bwd=state["W_bwd"],
         )
+
+
+def _timit_closure_release_label(timit_phn, ipa, next_timit_phn):
+    if timit_phn in _CR_CLOSURE_TO_STOP:
+        if timit_phn == "tcl" and next_timit_phn == "ch":
+            return "t͡ʃ_cl"
+        if timit_phn == "dcl" and next_timit_phn == "jh":
+            return "d͡ʒ_cl"
+        return _CR_CLOSURE_TO_STOP[timit_phn] + "_cl"
+    if isinstance(ipa, str) and ipa in _CR_RELEASE_IPA:
+        return ipa + "_rl"
+    return ipa
+
+
+def _add_timit_closure_release_labels(df):
+    required = {"audio_path", "min", "timit_phn", "ipa", "feat"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            "TIMIT closure/release training requires columns: "
+            f"{sorted(required)}; missing {sorted(missing)}"
+        )
+    out = df.sort_values(["audio_path", "min"]).copy()
+    out["next_timit_phn"] = out.groupby("audio_path").timit_phn.shift(-1)
+    out["cr_ipa"] = [
+        _timit_closure_release_label(tp, ip, nx)
+        for tp, ip, nx in zip(out.timit_phn, out.ipa, out.next_timit_phn)
+    ]
+    return out[out.cr_ipa.notna()]
+
+
+def _prep_timit_closure_release_featmap(vocab, ft):
+    base = ft.fts("a").names
+    names = (
+        ["silence+"]
+        + [f"{n}+" for n in base]
+        + [f"{n}-" for n in base]
+        + ["closure+", "closure-", "release+", "release-"]
+    )
+
+    def panphon_onehot(seg):
+        feats = ft.fts(seg).numeric()
+        return [1 if n == 1 else 0 for n in feats] + [
+            1 if n == -1 else 0 for n in feats
+        ]
+
+    featmap = {}
+    for v in vocab:
+        if v == "_":
+            featmap[v] = [1] + [0] * (len(base) * 2) + [0, 0, 0, 0]
+        elif v.endswith("_cl"):
+            assert ft.seg_known(v[:-3]), f"unknown closure base: {v[:-3]!r}"
+            featmap[v] = [0] + panphon_onehot(v[:-3]) + [1, 0, 0, 1]
+        elif v.endswith("_rl"):
+            assert ft.seg_known(v[:-3]), f"unknown release base: {v[:-3]!r}"
+            featmap[v] = [0] + panphon_onehot(v[:-3]) + [0, 1, 1, 0]
+        elif ft.seg_known(v):
+            featmap[v] = [0] + panphon_onehot(v) + [0, 0, 0, 0]
+        elif v in _CR_DIPHTHONGS:
+            continue
+        else:
+            raise ValueError(f"unexpected panphon-unknown label: {v!r}")
+    return names, featmap
