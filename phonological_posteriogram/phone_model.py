@@ -135,6 +135,53 @@ class PhoneModel:
         torch.save(artifact, out)
         return out
 
+    def push_to_hub(
+        self,
+        repo_id: str,
+        *,
+        filename: str = DEFAULT_ARTIFACT_FILENAME,
+        private: bool = False,
+        commit_message: Optional[str] = None,
+        tune_metrics: Optional[dict] = None,
+        token: Optional[str] = None,
+    ) -> str:
+        """Save the artifact and push it to a HuggingFace Hub model repo.
+
+        Creates ``repo_id`` (public unless ``private=True``) if it doesn't
+        exist, writes the artifact to a temp dir, and uploads it via
+        :class:`huggingface_hub.HfApi`. Returns the repo URL.
+
+        Args:
+            repo_id: ``"org/name"`` — pushed as ``filename`` at the repo root.
+            filename: Artifact filename inside the repo (default ``model.pt``).
+            private: When the repo is created on this push, mark it private.
+            commit_message: Override the auto commit message.
+            tune_metrics: Optional sweep metrics dict to record in the artifact.
+            token: Override the HF auth token (default uses the cached login).
+        """
+        import tempfile
+        from huggingface_hub import HfApi, create_repo
+
+        create_repo(
+            repo_id,
+            repo_type="model",
+            private=private,
+            exist_ok=True,
+            token=token,
+        )
+        api = HfApi(token=token)
+        with tempfile.TemporaryDirectory() as td:
+            self.save_pretrained(td, filename=filename, tune_metrics=tune_metrics)
+            api.upload_folder(
+                folder_path=td,
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=(
+                    commit_message or f"Upload PhoneModel artifact ({filename})"
+                ),
+            )
+        return f"https://huggingface.co/{repo_id}"
+
     def to(self, device: str) -> "PhoneModel":
         self.device = device
         if self._encoder is not None:
