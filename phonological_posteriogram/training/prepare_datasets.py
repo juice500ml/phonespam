@@ -204,17 +204,24 @@ def _prepare_timit(timit_path: Path, mode: str = "merged"):
     """
     assert mode in TIMIT_MODES, f"unknown TIMIT mode: {mode!r}"
     # Different TIMIT distributions use different casing (LDC ships uppercase
-    # TRAIN/TEST and .WAV/.PHN; other copies are lowercase), so match case
-    # insensitively. Note glob(case_sensitive=False) requires Python 3.12+.
+    # TRAIN/TEST and .WAV/.PHN; other copies are lowercase). Try the LDC
+    # convention first, then the lowercased variant — avoids the Python 3.12+
+    # ``case_sensitive=False`` kwarg so this stays 3.8+ compatible.
     rows = []
     for split in ("TRAIN", "TEST"):
-        wav_paths = sorted(
-            timit_path.glob(f"**/{split}/**/*.WAV", case_sensitive=False)
+        wav_paths = (
+            sorted(timit_path.glob(f"**/{split}/**/*.WAV"))
+            or sorted(timit_path.glob(f"**/{split.lower()}/**/*.wav"))
         )
         for audio_path in tqdm(wav_paths, desc=f"TIMIT {split}"):
             phn_path = next(
-                audio_path.parent.glob(
-                    f"{audio_path.stem}.PHN", case_sensitive=False
+                (
+                    p
+                    for p in (
+                        audio_path.with_suffix(".PHN"),
+                        audio_path.with_suffix(".phn"),
+                    )
+                    if p.exists()
                 ),
                 None,
             )
