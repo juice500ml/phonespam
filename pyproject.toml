@@ -51,6 +51,7 @@ dependencies = [
 
 [project.optional-dependencies]
 train = [
+    "phone-metrics",
     "praatio>=6.0",
     "tqdm>=4.64",
 ]
@@ -68,6 +69,9 @@ phonological-posteriogram = "phonological_posteriogram.cli:main"
 Homepage = "https://github.com/juice500ml/phonological-posteriogram"
 Repository = "https://github.com/juice500ml/phonological-posteriogram"
 Issues = "https://github.com/juice500ml/phonological-posteriogram/issues"
+
+[tool.uv.sources]
+phone-metrics = { path = "../phone-metrics", editable = true }
 
 [tool.setuptools]
 packages = ["phonological_posteriogram", "phonological_posteriogram.training"]
