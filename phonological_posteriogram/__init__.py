@@ -1,0 +1,27 @@
+"""Phone recognition and segmentation using phonological posteriograms."""
+
+from .evaluation import (
+    PhoneRecognitionEvaluator,
+    SegmentationEvaluator,
+    SegmentationUnit,
+)
+from .phone_model import PhoneModel
+from .posteriogram import PhonologicalPosteriogram
+from .recognizer import Recognizer
+from .segmenter import Segmenter
+
+try:
+    from ._version import version as __version__
+except ImportError:
+    __version__ = "0.0.0"
+
+__all__ = [
+    "PhoneModel",
+    "PhoneRecognitionEvaluator",
+    "PhonologicalPosteriogram",
+    "Recognizer",
+    "SegmentationEvaluator",
+    "SegmentationUnit",
+    "Segmenter",
+    "__version__",
+]

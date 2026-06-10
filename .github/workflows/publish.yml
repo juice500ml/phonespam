@@ -1,0 +1,91 @@
+name: Release and Publish
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed to create tags and releases
+      id-token: write  # OIDC for trusted publishing to PyPI
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install python-semantic-release[build] setuptools-scm
+
+    - name: Configure git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Run semantic release version
+      id: semantic_release
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        # Get the latest tag before running semantic-release
+        TAG_BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+        # Run semantic-release version - it will create a git tag if version bump is needed.
+        # Since we're using setuptools-scm, we don't need to update version files.
+        # Use --no-vcs-release to prevent creating release here (publish step handles it).
+        if semantic-release version --no-vcs-release; then
+          TAG_AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ "$TAG_AFTER" != "$TAG_BEFORE" ] && [ -n "$TAG_AFTER" ]; then
+            echo "no_release=false" >> $GITHUB_OUTPUT
+            echo "tag=$TAG_AFTER" >> $GITHUB_OUTPUT
+            echo "New version tag created: $TAG_AFTER"
+
+            git push origin "$TAG_AFTER" || echo "Tag may already exist on remote"
+
+            if git describe --exact-match --tags HEAD >/dev/null 2>&1; then
+              echo "Current commit is tagged: $TAG_AFTER"
+            else
+              echo "Warning: Current commit is not the tagged commit"
+            fi
+          else
+            echo "no_release=true" >> $GITHUB_OUTPUT
+            echo "No version bump needed (tag before: $TAG_BEFORE, tag after: $TAG_AFTER)"
+          fi
+        else
+          echo "no_release=true" >> $GITHUB_OUTPUT
+          echo "semantic-release version exited with error or no version bump needed"
+        fi
+
+    - name: Build package
+      if: steps.semantic_release.outputs.no_release != 'true'
+      run: |
+        rm -rf dist/ build/ *.egg-info phonological_posteriogram.egg-info
+        python -m pip install build
+        python -m build
+        echo "Built files:"
+        ls -la dist/
+
+    - name: Create GitHub release
+      if: steps.semantic_release.outputs.no_release != 'true'
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        semantic-release publish
+
+    - name: Publish to PyPI
+      if: steps.semantic_release.outputs.no_release != 'true'
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/
