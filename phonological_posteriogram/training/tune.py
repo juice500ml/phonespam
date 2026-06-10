@@ -64,9 +64,18 @@ from .evaluate import _gt_units
 
 LOWER_IS_BETTER = frozenset({"known_per", "known_pfer", "unknown_per", "unknown_pfer"})
 METRIC_CHOICES = (
-    "known_rval", "known_f1", "known_precision", "known_recall",
-    "unknown_rval", "unknown_f1", "unknown_precision", "unknown_recall",
-    "known_per", "known_pfer", "unknown_per", "unknown_pfer",
+    "known_rval",
+    "known_f1",
+    "known_precision",
+    "known_recall",
+    "unknown_rval",
+    "unknown_f1",
+    "unknown_precision",
+    "unknown_recall",
+    "known_per",
+    "known_pfer",
+    "unknown_per",
+    "unknown_pfer",
 )
 _NO_CONSTRAINT = dict(lang=None, phoible_id=None, phoneme=False, vocab=None)
 
@@ -132,9 +141,7 @@ def _get_args(argv=None):
             "segments are collapsed."
         ),
     )
-    parser.add_argument(
-        "--device", default="cpu", help="Torch device (cpu, cuda:0, ...)."
-    )
+    parser.add_argument("--device", default="cpu", help="Torch device (cpu, cuda:0, ...).")
     parser.add_argument(
         "--limit",
         type=int,
@@ -170,9 +177,7 @@ def _extract_feature_cache(model, df, audio_paths):
     for audio_path in tqdm(audio_paths, desc="Encoding (once)"):
         x = model.load_audio(audio_path)
         feats = model.extract_features(x)
-        posteriogram = model.posteriogram.project(
-            feats, view="ipa", act="sigmoid"
-        )
+        posteriogram = model.posteriogram.project(feats, view="ipa", act="sigmoid")
         cache[audio_path] = (feats, x, posteriogram)
         ground_truth[audio_path] = _gt_units(df[df.audio_path == audio_path])
     return cache, ground_truth
@@ -207,19 +212,13 @@ def _resolve_known_lang_kwargs(df, audio_paths):
             "(an ISO 639-3 code per row). Re-run "
             "`prepare_datasets.py` to regenerate the CSV."
         )
-    path_to_lang = (
-        df.drop_duplicates("audio_path")
-          .set_index("audio_path")["language"]
-          .to_dict()
-    )
+    path_to_lang = df.drop_duplicates("audio_path").set_index("audio_path")["language"].to_dict()
     resolved = {}
     unresolved: set = set()
     for p in audio_paths:
         try:
             pid = _resolve_lang(str(path_to_lang[p]))
-            resolved[p] = dict(
-                lang=None, phoible_id=pid, phoneme=False, vocab=None
-            )
+            resolved[p] = dict(lang=None, phoible_id=pid, phoneme=False, vocab=None)
         except ValueError:
             unresolved.add(str(path_to_lang[p]))
             resolved[p] = dict(_NO_CONSTRAINT)
@@ -235,8 +234,13 @@ def _resolve_known_lang_kwargs(df, audio_paths):
 
 
 def _score_hparams(
-    model, overrides, kwargs_known,
-    cache, ground_truth, seg_evaluator, rec_evaluator,
+    model,
+    overrides,
+    kwargs_known,
+    cache,
+    ground_truth,
+    seg_evaluator,
+    rec_evaluator,
     *,
     dedup: bool = True,
 ):
@@ -286,8 +290,7 @@ def run(args):
     hparam_list = json.loads(Path(args.hparams_json).read_text())
     if not isinstance(hparam_list, list) or not hparam_list:
         raise ValueError(
-            f"{args.hparams_json} must contain a non-empty JSON list of "
-            "hparam-override dicts."
+            f"{args.hparams_json} must contain a non-empty JSON list of hparam-override dicts."
         )
 
     df = pd.read_csv(args.dataset_csv)
@@ -320,16 +323,17 @@ def run(args):
     results = []
     for i, overrides in enumerate(hparam_list):
         metrics = _score_hparams(
-            model, overrides, kwargs_known,
-            cache, ground_truth,
-            seg_evaluator, rec_evaluator,
+            model,
+            overrides,
+            kwargs_known,
+            cache,
+            ground_truth,
+            seg_evaluator,
+            rec_evaluator,
             dedup=args.dedup,
         )
         score = float(metrics[args.metric])
-        results.append(
-            {"index": i, "overrides": overrides, "score": score,
-             "metrics": metrics}
-        )
+        results.append({"index": i, "overrides": overrides, "score": score, "metrics": metrics})
         print(
             f"[{i:3d}] rval={metrics['unknown_rval']:.4f}  "
             f"precision={metrics['unknown_precision']:.4f}  "
@@ -350,9 +354,7 @@ def run(args):
         args.output_json.write_text(json.dumps(results, indent=2, default=str))
         print(f"Wrote ranked results to {args.output_json}")
 
-    if args.save_best_dir is not None and best["score"] not in (
-        float("inf"), float("-inf")
-    ):
+    if args.save_best_dir is not None and best["score"] not in (float("inf"), float("-inf")):
         best_model = PhoneModel(
             posteriogram=model.posteriogram,
             net_spec=model.net_spec,

@@ -16,9 +16,7 @@ import torch
 import torchaudio.compliance.kaldi as kaldi
 from scipy.signal import find_peaks
 
-warnings.filterwarnings(
-    "ignore", message="Support for mismatched key_padding_mask"
-)
+warnings.filterwarnings("ignore", message="Support for mismatched key_padding_mask")
 
 
 # --------------------------------------------------------------------------- #
@@ -59,9 +57,7 @@ def _mel_svf(mel_frames, left, right, distance="cosine"):
     return signal
 
 
-def _mel_svf_signal(
-    audio, left, right, target_len, *, sr, mel_frame_shift_ms, distance="cosine"
-):
+def _mel_svf_signal(audio, left, right, target_len, *, sr, mel_frame_shift_ms, distance="cosine"):
     mel = _melspec_kaldi(audio, sr=sr, frame_shift_ms=mel_frame_shift_ms)
     sig = _mel_svf(mel, left=left, right=right, distance=distance)
     if len(sig) == 0 or target_len == 0:
@@ -88,9 +84,7 @@ def _pair_distance(a, b, kind="cosine"):
         return out
     if kind == "l2":
         return np.linalg.norm(a - b, axis=1)
-    raise ValueError(
-        f"Unknown distance {kind!r}; choose one of {DISTANCES}."
-    )
+    raise ValueError(f"Unknown distance {kind!r}; choose one of {DISTANCES}.")
 
 
 def _delta(proj, offset, distance="cosine"):
@@ -98,9 +92,7 @@ def _delta(proj, offset, distance="cosine"):
     delta = np.full(T, np.nan)
     if T <= offset:
         return delta
-    delta[: T - offset] = _pair_distance(
-        proj[:-offset], proj[offset:], distance
-    )
+    delta[: T - offset] = _pair_distance(proj[:-offset], proj[offset:], distance)
     return delta
 
 
@@ -115,9 +107,9 @@ def _bwd_contrast(proj_ipa, bwd_proj, lookbehind, distance="cosine"):
     if T <= lookbehind:
         return contrast
     bp = bwd_proj[lookbehind:]
-    contrast[lookbehind:] = _pair_distance(
-        bp, proj_ipa[lookbehind:], distance
-    ) - _pair_distance(bp, proj_ipa[: T - lookbehind], distance)
+    contrast[lookbehind:] = _pair_distance(bp, proj_ipa[lookbehind:], distance) - _pair_distance(
+        bp, proj_ipa[: T - lookbehind], distance
+    )
     return contrast
 
 
@@ -195,9 +187,7 @@ class Segmenter:
     @classmethod
     def default_hparams(cls):
         return {
-            "combined_signals": [
-                _copy_spec(s) for s in cls.DEFAULT_COMBINED_SIGNALS
-            ],
+            "combined_signals": [_copy_spec(s) for s in cls.DEFAULT_COMBINED_SIGNALS],
             "combined_prominence": cls.COMBINED_PROMINENCE,
             # Activation applied to the phonological-vector projections that
             # feed the boundary signals: "none" (raw) or "sigmoid".
@@ -251,9 +241,7 @@ class Segmenter:
         if name == "frame_delta":
             return _delta(proj_ipa, kwargs["offset"], distance=distance)
         if name == "bwd_contrast":
-            return _bwd_contrast(
-                proj_ipa, bwd_proj, kwargs["lookbehind"], distance=distance
-            )
+            return _bwd_contrast(proj_ipa, bwd_proj, kwargs["lookbehind"], distance=distance)
         if name == "mel_svf":
             return _mel_svf_signal(
                 waveform_np,
@@ -316,9 +304,7 @@ class Segmenter:
         proj_ipa = self.posteriogram.project(net_feats, view="ipa", act=act)
         bwd_proj = net_feats @ self.posteriogram.W_bwd
 
-        signal = self._combined_signal(
-            proj_ipa, bwd_proj, waveform_np
-        )
+        signal = self._combined_signal(proj_ipa, bwd_proj, waveform_np)
         preds = find_peaks(signal, prominence=h["combined_prominence"])[0]
 
         if h["drop_closure_release"]:
@@ -328,9 +314,7 @@ class Segmenter:
             silence_mask = self.posteriogram.predict_silence_mask(
                 net_feats, threshold=h["silence_threshold"]
             )
-            preds = self._handle_silence(
-                preds, silence_mask, snap_tolerance=h["snap_tolerance"]
-            )
+            preds = self._handle_silence(preds, silence_mask, snap_tolerance=h["snap_tolerance"])
 
         return preds
 
@@ -351,10 +335,7 @@ class Segmenter:
             if peak <= 0 or peak >= len(proj_ipa):
                 keep.append(peak)
                 continue
-            if (
-                proj_ipa[peak - 1, closure_idx] > thr
-                and proj_ipa[peak, release_idx] > thr
-            ):
+            if proj_ipa[peak - 1, closure_idx] > thr and proj_ipa[peak, release_idx] > thr:
                 continue
             keep.append(peak)
         return np.asarray(keep, dtype=preds.dtype)
@@ -380,29 +361,19 @@ class Segmenter:
 
         for s, e in spans:
             if s > 0:
-                nearby = preds[
-                    (preds >= s - snap_tolerance)
-                    & (preds <= s + snap_tolerance)
-                ]
+                nearby = preds[(preds >= s - snap_tolerance) & (preds <= s + snap_tolerance)]
                 if len(nearby) > 0:
                     outside = nearby[nearby <= s]
-                    silence_boundaries.append(
-                        outside.min() if len(outside) > 0 else nearby.min()
-                    )
+                    silence_boundaries.append(outside.min() if len(outside) > 0 else nearby.min())
                     snapped.update(nearby.tolist())
                 else:
                     silence_boundaries.append(s)
 
             if e < n_frames:
-                nearby = preds[
-                    (preds >= e - snap_tolerance)
-                    & (preds <= e + snap_tolerance)
-                ]
+                nearby = preds[(preds >= e - snap_tolerance) & (preds <= e + snap_tolerance)]
                 if len(nearby) > 0:
                     outside = nearby[nearby >= e]
-                    silence_boundaries.append(
-                        outside.max() if len(outside) > 0 else nearby.max()
-                    )
+                    silence_boundaries.append(outside.max() if len(outside) > 0 else nearby.max())
                     snapped.update(nearby.tolist())
                 else:
                     silence_boundaries.append(e)
@@ -412,8 +383,4 @@ class Segmenter:
             if p in snapped:
                 keep[i] = False
 
-        return np.unique(
-            np.concatenate(
-                [preds[keep], np.array(silence_boundaries, dtype=int)]
-            )
-        )
+        return np.unique(np.concatenate([preds[keep], np.array(silence_boundaries, dtype=int)]))

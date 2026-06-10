@@ -55,12 +55,8 @@ def _get_args(argv=None):
         choices=("train", "test", "both"),
         help="Dataset split to use.",
     )
-    parser.add_argument(
-        "--output_path", type=Path, required=True, help="Output .pkl path."
-    )
-    parser.add_argument(
-        "--device", default="cpu", help="Torch device, e.g. cpu or cuda:0."
-    )
+    parser.add_argument("--output_path", type=Path, required=True, help="Output .pkl path.")
+    parser.add_argument("--device", default="cpu", help="Torch device, e.g. cpu or cuda:0.")
     parser.add_argument(
         "--layer_index",
         type=int,
@@ -154,9 +150,7 @@ def run(args):
         df["_frame_max"] = encoder.time_to_frame(df["max"].to_numpy())
         df["feat"] = df.apply(functools.partial(_slice_feats, feats=data), axis=1)
         df = df.drop(columns=["_frame_min", "_frame_max"])
-        df["feat"] = df["feat"].apply(
-            functools.partial(_pool_feats, pool=args.pool)
-        )
+        df["feat"] = df["feat"].apply(functools.partial(_pool_feats, pool=args.pool))
 
     df.attrs["hf_repo"] = args.model
     df.attrs["encoder_layer"] = args.layer_index

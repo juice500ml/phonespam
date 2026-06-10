@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
 
-import numpy as np
 import librosa
+import numpy as np
 import torch
 
 from .evaluation import SegmentationUnit
@@ -50,21 +50,16 @@ class PhoneModel:
         self,
         posteriogram: PhonologicalPosteriogram,
         net_spec: dict,
-        hparams: Optional[dict] = None,
+        hparams: dict | None = None,
         device: str = "cpu",
     ):
         self.posteriogram = posteriogram
         self.net_spec = dict(net_spec)
-        self.hparams = (
-            dict(hparams) if hparams is not None else Segmenter.default_hparams()
-        )
-        if (
-            hparams is None
-            and not {"closure+", "release+"}.issubset(self.posteriogram.featnames)
-        ):
+        self.hparams = dict(hparams) if hparams is not None else Segmenter.default_hparams()
+        if hparams is None and not {"closure+", "release+"}.issubset(self.posteriogram.featnames):
             self.hparams["drop_closure_release"] = False
         self.device = device
-        self._encoder: Optional[SSLEncoder] = None
+        self._encoder: SSLEncoder | None = None
         self.recognizer = Recognizer(featnames=self.posteriogram.featnames)
 
     @property
@@ -84,13 +79,13 @@ class PhoneModel:
     @classmethod
     def from_pretrained(
         cls,
-        model_name_or_path: Union[str, os.PathLike],
+        model_name_or_path: str | os.PathLike,
         *,
         filename: str = DEFAULT_ARTIFACT_FILENAME,
-        revision: Optional[str] = None,
-        cache_dir: Optional[Union[str, os.PathLike]] = None,
+        revision: str | None = None,
+        cache_dir: str | os.PathLike | None = None,
         device: str = "cpu",
-    ) -> "PhoneModel":
+    ) -> PhoneModel:
         """Load a trained model from the HuggingFace Hub or a local path.
 
         ``model_name_or_path`` may be a HuggingFace repo id, a local directory
@@ -102,12 +97,8 @@ class PhoneModel:
             revision=revision,
             cache_dir=cache_dir,
         )
-        artifact = torch.load(
-            artifact_path, map_location="cpu", weights_only=False
-        )
-        posteriogram = PhonologicalPosteriogram.from_state(
-            artifact["posteriogram"]
-        )
+        artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
+        posteriogram = PhonologicalPosteriogram.from_state(artifact["posteriogram"])
         return cls(
             posteriogram=posteriogram,
             net_spec=artifact["net"],
@@ -117,10 +108,10 @@ class PhoneModel:
 
     def save_pretrained(
         self,
-        save_directory: Union[str, os.PathLike],
+        save_directory: str | os.PathLike,
         *,
         filename: str = DEFAULT_ARTIFACT_FILENAME,
-        tune_metrics: Optional[dict] = None,
+        tune_metrics: dict | None = None,
     ) -> Path:
         """Save the model artifact to a directory (HF Hub-compatible layout)."""
         save_directory = Path(save_directory)
@@ -141,9 +132,9 @@ class PhoneModel:
         *,
         filename: str = DEFAULT_ARTIFACT_FILENAME,
         private: bool = False,
-        commit_message: Optional[str] = None,
-        tune_metrics: Optional[dict] = None,
-        token: Optional[str] = None,
+        commit_message: str | None = None,
+        tune_metrics: dict | None = None,
+        token: str | None = None,
     ) -> str:
         """Save the artifact and push it to a HuggingFace Hub model repo.
 
@@ -160,6 +151,7 @@ class PhoneModel:
             token: Override the HF auth token (default uses the cached login).
         """
         import tempfile
+
         from huggingface_hub import HfApi, create_repo
 
         create_repo(
@@ -176,13 +168,11 @@ class PhoneModel:
                 folder_path=td,
                 repo_id=repo_id,
                 repo_type="model",
-                commit_message=(
-                    commit_message or f"Upload PhoneModel artifact ({filename})"
-                ),
+                commit_message=(commit_message or f"Upload PhoneModel artifact ({filename})"),
             )
         return f"https://huggingface.co/{repo_id}"
 
-    def to(self, device: str) -> "PhoneModel":
+    def to(self, device: str) -> PhoneModel:
         self.device = device
         if self._encoder is not None:
             self._encoder.model.to(device)
@@ -191,7 +181,7 @@ class PhoneModel:
 
     # -- algorithm factories --------------------------------------------- #
 
-    def segmenter(self, hparam_overrides: Optional[dict] = None) -> Segmenter:
+    def segmenter(self, hparam_overrides: dict | None = None) -> Segmenter:
         """Build a :class:`Segmenter` over this model's posteriogram.
 
         ``hparam_overrides`` is merged on top of the model's default
@@ -209,7 +199,7 @@ class PhoneModel:
 
     # -- end-to-end convenience ------------------------------------------ #
 
-    def load_audio(self, path: Union[str, os.PathLike]) -> np.ndarray:
+    def load_audio(self, path: str | os.PathLike) -> np.ndarray:
         """Load an audio file as a mono float32 waveform at the model's sr.
 
         Thin wrapper around ``librosa.load`` that locks in the conventions
@@ -220,8 +210,8 @@ class PhoneModel:
 
     def _coerce_waveform(
         self,
-        audio: Union[str, os.PathLike, np.ndarray],
-        sr: Optional[int],
+        audio: str | os.PathLike | np.ndarray,
+        sr: int | None,
     ) -> np.ndarray:
         """Normalize ``audio`` (path-or-array) to a mono float32 waveform
         at the model's sample rate, resampling (with a warning) if needed.
@@ -243,9 +233,9 @@ class PhoneModel:
                 f"expected rate ({target_sr} Hz); resampling.",
                 stacklevel=3,
             )
-            waveform = librosa.resample(
-                waveform, orig_sr=int(sr), target_sr=int(target_sr)
-            ).astype(np.float32)
+            waveform = librosa.resample(waveform, orig_sr=int(sr), target_sr=int(target_sr)).astype(
+                np.float32
+            )
         return waveform
 
     def extract_features(self, waveform: np.ndarray) -> np.ndarray:
@@ -259,15 +249,15 @@ class PhoneModel:
 
     def recognize(
         self,
-        audio: Union[str, os.PathLike, np.ndarray],
+        audio: str | os.PathLike | np.ndarray,
         *,
-        sr: Optional[int] = None,
-        lang: Optional[str] = None,
-        phoible_id: Optional[int] = None,
+        sr: int | None = None,
+        lang: str | None = None,
+        phoible_id: int | None = None,
         phoneme: bool = False,
-        vocab: Optional[Sequence[str]] = None,
+        vocab: Sequence[str] | None = None,
         dedup: bool = True,
-    ) -> List[SegmentationUnit]:
+    ) -> list[SegmentationUnit]:
         """End-to-end: load → encode → segment → per-segment recognize.
 
         Args:
@@ -291,9 +281,7 @@ class PhoneModel:
         waveform = self._coerce_waveform(audio, sr)
         feats = self.extract_features(waveform)
         boundaries = self.segmenter().segment(feats, waveform)
-        posteriogram = self.posteriogram.project(
-            feats, view="ipa", act="sigmoid"
-        )
+        posteriogram = self.posteriogram.project(feats, view="ipa", act="sigmoid")
         triples = self.recognizer.recognize(
             posteriogram,
             boundaries,
@@ -308,9 +296,7 @@ class PhoneModel:
         starts = self.encoder.frame_to_time(np.array([t[0] for t in triples]))
         ends = self.encoder.frame_to_time(np.array([t[1] for t in triples]))
         units = [
-            SegmentationUnit(
-                float(starts[i]), float(ends[i]), triples[i][2]
-            )
+            SegmentationUnit(float(starts[i]), float(ends[i]), triples[i][2])
             for i in range(len(triples))
         ]
         units[0].start = 0.0
@@ -322,8 +308,8 @@ def _resolve_artifact_path(
     model_name_or_path,
     *,
     filename: str,
-    revision: Optional[str],
-    cache_dir: Optional[Union[str, os.PathLike]],
+    revision: str | None,
+    cache_dir: str | os.PathLike | None,
 ) -> str:
     p = Path(str(model_name_or_path))
     if p.is_file():

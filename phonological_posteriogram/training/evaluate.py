@@ -122,9 +122,7 @@ def _get_args(argv=None):
             "Phoneme set rather than the surface Allophones."
         ),
     )
-    parser.add_argument(
-        "--device", default="cpu", help="Torch device (cpu, cuda:0, ...)."
-    )
+    parser.add_argument("--device", default="cpu", help="Torch device (cpu, cuda:0, ...).")
     parser.add_argument(
         "--limit",
         type=int,
@@ -137,10 +135,7 @@ def _get_args(argv=None):
 def _gt_units(group_df):
     """Build a sorted list of GT :class:`SegmentationUnit` from a CSV group."""
     g = group_df.sort_values("min")
-    return [
-        SegmentationUnit(float(row.min), float(row.max), row.ipa)
-        for row in g.itertuples()
-    ]
+    return [SegmentationUnit(float(row.min), float(row.max), row.ipa) for row in g.itertuples()]
 
 
 def _print_recog_results(r):
@@ -160,9 +155,7 @@ def run(args):
         # toggles, so override the hparam in place for this run.
         model.hparams["snap_silence"] = False
 
-    vocab = (
-        [p for p in args.vocab.split(",") if p] if args.vocab is not None else None
-    )
+    vocab = [p for p in args.vocab.split(",") if p] if args.vocab is not None else None
 
     df = pd.read_csv(args.dataset_csv)
     if args.split != "both":
@@ -197,9 +190,7 @@ def run(args):
         forced=args.forced,
         match_mode=args.match_mode,
     )
-    seg_results = seg_eval.evaluate_batch(
-        predictions, ground_truth, symbols_dict=symbols_dict
-    )
+    seg_results = seg_eval.evaluate_batch(predictions, ground_truth, symbols_dict=symbols_dict)
     seg_eval.pretty_print(seg_results)
 
     rec_eval = PhoneRecognitionEvaluator()

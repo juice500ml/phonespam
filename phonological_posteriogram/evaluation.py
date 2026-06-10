@@ -27,7 +27,6 @@ import io
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 import numpy as np
 import panphon.distance
@@ -72,9 +71,7 @@ class SegmentationEvaluator:
         match_mode: str = "lenient",
     ):
         if match_mode not in {"strict", "lenient"}:
-            raise ValueError(
-                f"match_mode must be 'strict' or 'lenient', got {match_mode!r}"
-            )
+            raise ValueError(f"match_mode must be 'strict' or 'lenient', got {match_mode!r}")
         self.tolerance_sec = tolerance_ms / 1000.0
         self._tol_eps = 1e-9  # Float-precision slack on the boundary check.
         self.forced = forced
@@ -82,10 +79,10 @@ class SegmentationEvaluator:
 
     def evaluate_boundaries(
         self,
-        predicted: List[SegmentationUnit],
-        ground_truth: List[SegmentationUnit],
-        symbols: Optional[List[str]] = None,
-    ) -> Dict[str, float]:
+        predicted: list[SegmentationUnit],
+        ground_truth: list[SegmentationUnit],
+        symbols: list[str] | None = None,
+    ) -> dict[str, float]:
         """Evaluate predicted boundaries against ground truth (one utterance)."""
         if not predicted or not ground_truth:
             return {}
@@ -106,15 +103,13 @@ class SegmentationEvaluator:
         }
         if not self.forced:
             return results
-        return self._add_forced_alignment_metrics(
-            results, predicted, ground_truth, symbols
-        )
+        return self._add_forced_alignment_metrics(results, predicted, ground_truth, symbols)
 
     def _get_boundary_counts(
         self,
-        predicted: List[SegmentationUnit],
-        ground_truth: List[SegmentationUnit],
-    ) -> Dict[str, int]:
+        predicted: list[SegmentationUnit],
+        ground_truth: list[SegmentationUnit],
+    ) -> dict[str, int]:
         pred_times = self._extract_boundary_times(predicted)
         gt_times = self._extract_boundary_times(ground_truth)
 
@@ -126,14 +121,10 @@ class SegmentationEvaluator:
             # Guard the per-query .min() against an empty reference array
             # (possible once endpoints are stripped from a short utterance).
             precision_counter = (
-                sum(np.abs(gt_times - t).min() <= tol for t in pred_times)
-                if len(gt_times)
-                else 0
+                sum(np.abs(gt_times - t).min() <= tol for t in pred_times) if len(gt_times) else 0
             )
             recall_counter = (
-                sum(np.abs(pred_times - t).min() <= tol for t in gt_times)
-                if len(pred_times)
-                else 0
+                sum(np.abs(pred_times - t).min() <= tol for t in gt_times) if len(pred_times) else 0
             )
 
         return {
@@ -143,14 +134,12 @@ class SegmentationEvaluator:
             "gt_counter": int(len(gt_times)),
         }
 
-    def _greedy_match_count(
-        self, ref_times: np.ndarray, query_times: np.ndarray
-    ) -> int:
+    def _greedy_match_count(self, ref_times: np.ndarray, query_times: np.ndarray) -> int:
         """Count queries that uniquely match a ref boundary within tolerance."""
         if len(ref_times) == 0 or len(query_times) == 0:
             return 0
         tol = self.tolerance_sec + self._tol_eps
-        matches: Dict[int, List[int]] = {}
+        matches: dict[int, list[int]] = {}
         for i, q in enumerate(query_times):
             dists = np.abs(ref_times - q)
             idxs = np.argsort(dists)
@@ -168,16 +157,16 @@ class SegmentationEvaluator:
 
     def _add_forced_alignment_metrics(
         self,
-        results: Dict[str, float],
-        predicted: List[SegmentationUnit],
-        ground_truth: List[SegmentationUnit],
-        symbols: Optional[List[str]] = None,
-    ) -> Dict[str, float]:
+        results: dict[str, float],
+        predicted: list[SegmentationUnit],
+        ground_truth: list[SegmentationUnit],
+        symbols: list[str] | None = None,
+    ) -> dict[str, float]:
         n = min(len(predicted), len(ground_truth))
         metrics = np.array(
             [
                 self._compute_metrics(p.start, p.end, g.start, g.end)
-                for p, g in zip(predicted, ground_truth)
+                for p, g in zip(predicted, ground_truth, strict=False)
             ]
         )
         start_err, end_err, pbe, dur_err, gt_dur, pred_dur = metrics.T
@@ -208,9 +197,7 @@ class SegmentationEvaluator:
     # Boundary helpers                                                   #
     # ------------------------------------------------------------------ #
 
-    def _extract_boundary_times(
-        self, units: List[SegmentationUnit]
-    ) -> np.ndarray:
+    def _extract_boundary_times(self, units: list[SegmentationUnit]) -> np.ndarray:
         """Boundary times for an utterance: each segment ``start`` plus the
         single final ``end`` (ascending for sorted, contiguous units).
 
@@ -233,8 +220,8 @@ class SegmentationEvaluator:
 
     @staticmethod
     def _strip_outer_silence(
-        units: List[SegmentationUnit],
-    ) -> List[SegmentationUnit]:
+        units: list[SegmentationUnit],
+    ) -> list[SegmentationUnit]:
         """Drop at most one leading and one trailing silence segment."""
         lo, hi = 0, len(units)
         if lo < hi and units[lo].label == "_":
@@ -282,18 +269,12 @@ class SegmentationEvaluator:
             f"{prefix}_std": np.std(data),
             f"{prefix}_median": np.median(data),
         }
-        stats.update(
-            {f"{prefix}_p{p}": np.percentile(data, p) for p in percentiles}
-        )
+        stats.update({f"{prefix}_p{p}": np.percentile(data, p) for p in percentiles})
         return stats
 
     def _analyze_by_symbol(self, symbols, start_err, end_err, pbe, dur_err):
-        symbol_data = defaultdict(
-            lambda: {"start": [], "end": [], "pbe": [], "dur": []}
-        )
-        for sym, se, ee, pb, de in zip(
-            symbols, start_err, end_err, pbe, dur_err
-        ):
+        symbol_data = defaultdict(lambda: {"start": [], "end": [], "pbe": [], "dur": []})
+        for sym, se, ee, pb, de in zip(symbols, start_err, end_err, pbe, dur_err, strict=False):
             symbol_data[sym]["start"].append(se * 1000)
             symbol_data[sym]["end"].append(ee * 1000)
             symbol_data[sym]["pbe"].append(pb * 1000)
@@ -311,9 +292,7 @@ class SegmentationEvaluator:
             for sym, data in symbol_data.items()
         }
 
-    def _get_metric(
-        self, results: Dict, key: str, default: float = 0.0
-    ) -> float:
+    def _get_metric(self, results: dict, key: str, default: float = 0.0) -> float:
         """Get metric, falling back to mean_<key> for batch results."""
         if key in results and results[key] is not None:
             return results[key]
@@ -322,7 +301,7 @@ class SegmentationEvaluator:
             return results[mean_key]
         return default
 
-    def pretty_print(self, results: Dict) -> None:
+    def pretty_print(self, results: dict) -> None:
         """Print results as a rich table followed by a CSV dump."""
         if not results:
             print("No results")
@@ -337,9 +316,7 @@ class SegmentationEvaluator:
 
         console = Console()
         g = self._get_metric
-        samples = results.get(
-            "n", results.get("total_samples", results.get("n_gt", 0))
-        )
+        samples = results.get("n", results.get("total_samples", results.get("n_gt", 0)))
         segments = results.get("total_segments")
 
         table = Table(title="Segmentation Evaluation Results", show_lines=True)
@@ -388,9 +365,9 @@ class SegmentationEvaluator:
                 "Dur",
             ):
                 sym_table.add_column(col, justify="right")
-            for sym, s in sorted(
-                results["symbol_errors"].items(), key=lambda x: x[1]["pbe_mean"]
-            )[:20]:
+            for sym, s in sorted(results["symbol_errors"].items(), key=lambda x: x[1]["pbe_mean"])[
+                :20
+            ]:
                 sym_table.add_row(
                     str(sym)[:8],
                     str(s["count"]),
@@ -412,7 +389,7 @@ class SegmentationEvaluator:
         writer.writerow(flat.values())
         console.print(buf.getvalue())
 
-    def _plain_print(self, results: Dict) -> None:
+    def _plain_print(self, results: dict) -> None:
         """Fallback when rich is not installed."""
         g = self._get_metric
         print("Segmentation Evaluation Results")
@@ -435,11 +412,11 @@ class SegmentationEvaluator:
 
     def evaluate_batch(
         self,
-        predictions: Dict[str, List[SegmentationUnit]],
-        ground_truth: Dict[str, List[SegmentationUnit]],
-        symbols_dict: Optional[Dict[str, List[str]]] = None,
-        skip_symbols: Optional[set] = None,
-    ) -> Dict:
+        predictions: dict[str, list[SegmentationUnit]],
+        ground_truth: dict[str, list[SegmentationUnit]],
+        symbols_dict: dict[str, list[str]] | None = None,
+        skip_symbols: set | None = None,
+    ) -> dict:
         """Evaluate a batch of predictions against ground truth.
 
         ``predictions`` and ``ground_truth`` are dicts keyed by utterance id.
@@ -460,9 +437,7 @@ class SegmentationEvaluator:
         )
         for seg_id in ground_truth:
             if seg_id not in predictions:
-                log.warning(
-                    "Segment ID %s missing in predictions; skipping.", seg_id
-                )
+                log.warning("Segment ID %s missing in predictions; skipping.", seg_id)
                 continue
 
             preds = predictions[seg_id]
@@ -471,11 +446,8 @@ class SegmentationEvaluator:
 
             if skip_symbols:
                 preds_, gts_ = [], []
-                for p, g in zip(preds, gts):
-                    if (
-                        g.label not in skip_symbols
-                        and p.label not in skip_symbols
-                    ):
+                for p, g in zip(preds, gts, strict=False):
+                    if g.label not in skip_symbols and p.label not in skip_symbols:
                         preds_.append(p)
                         gts_.append(g)
                 preds = preds_
@@ -503,15 +475,11 @@ class SegmentationEvaluator:
         boundary_metrics = {"f1", "precision", "recall", "rval"}
         count_keys = {"n", "n_pred", "n_gt"}
         metric_names = [
-            k
-            for k in all_results[0]
-            if k not in ("symbol_errors", *count_keys, *boundary_metrics)
+            k for k in all_results[0] if k not in ("symbol_errors", *count_keys, *boundary_metrics)
         ]
         aggregated = {
             "total_segments": len(all_results),
-            "total_samples": sum(
-                r.get("n", r.get("n_gt", 0)) for r in all_results
-            ),
+            "total_samples": sum(r.get("n", r.get("n_gt", 0)) for r in all_results),
             **{
                 f"mean_{metric}": np.mean([r[metric] for r in all_results])
                 for metric in metric_names
@@ -591,9 +559,7 @@ def _levenshtein(a, b):
         curr = [i]
         for j, y in enumerate(b, 1):
             cost = 0 if x == y else 1
-            curr.append(
-                min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost)
-            )
+            curr.append(min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
         prev = curr
     return prev[-1]
 
@@ -657,20 +623,17 @@ class PhoneRecognitionEvaluator:
         ref = self._filter(_as_labels(reference))
         if not ref:
             return 0.0
-        cost = self._dist.feature_edit_distance(
-            "".join(pred), "".join(ref)
-        )
+        cost = self._dist.feature_edit_distance("".join(pred), "".join(ref))
         return float(cost) / len(ref)
 
-    def evaluate(self, predicted, reference) -> Dict[str, float]:
-        return {"per": self.per(predicted, reference),
-                "pfer": self.pfer(predicted, reference)}
+    def evaluate(self, predicted, reference) -> dict[str, float]:
+        return {"per": self.per(predicted, reference), "pfer": self.pfer(predicted, reference)}
 
     def evaluate_batch(
         self,
-        predictions: Dict[str, List],
-        ground_truth: Dict[str, List],
-    ) -> Dict:
+        predictions: dict[str, list],
+        ground_truth: dict[str, list],
+    ) -> dict:
         """Macro-averaged PER and PFER over a batch of utterances.
 
         Both dicts map utterance id to either a list of label strings or a

@@ -26,15 +26,13 @@ from __future__ import annotations
 import functools
 import os
 import warnings
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
-import panphon
 import pandas as pd
+import panphon
 
-_PHOIBLE_CSV = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "phoible.csv"
-)
+_PHOIBLE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "phoible.csv")
 
 
 @functools.lru_cache(maxsize=1)
@@ -50,8 +48,8 @@ def _phoible():
     return df
 
 
-@functools.lru_cache(maxsize=None)
-def _load_inventory(phoible_id: int, phoneme: bool = False) -> Tuple[str, ...]:
+@functools.cache
+def _load_inventory(phoible_id: int, phoneme: bool = False) -> tuple[str, ...]:
     """Load one Phoible inventory's phone list, filtered to panphon-known.
 
     Cached per ``(phoible_id, phoneme)`` so the CSV is read once and the
@@ -61,17 +59,12 @@ def _load_inventory(phoible_id: int, phoneme: bool = False) -> Tuple[str, ...]:
     df = _phoible()
     rows = df[df["InventoryID"] == int(phoible_id)]
     if rows.empty:
-        raise ValueError(
-            f"Phoible InventoryID {phoible_id} not found in the packaged "
-            "phoible.csv."
-        )
+        raise ValueError(f"Phoible InventoryID {phoible_id} not found in the packaged phoible.csv.")
     # Phoible uses the literal string "NA" as a no-data placeholder in the
     # Phoneme/Allophones columns (the CSV is read with keep_default_na=False,
     # so it stays a string rather than NaN). It's not a phone — skip it.
     if phoneme:
-        phones = sorted(
-            p for p in rows["Phoneme"].dropna().unique() if p != "NA"
-        )
+        phones = sorted(p for p in rows["Phoneme"].dropna().unique() if p != "NA")
     else:
         # Allophones is a space-separated list per phoneme entry.
         phones_set: set = set()
@@ -79,13 +72,11 @@ def _load_inventory(phoible_id: int, phoneme: bool = False) -> Tuple[str, ...]:
             phones_set.update(tok for tok in s.split() if tok != "NA")
         phones = sorted(phones_set)
 
-    return _filter_panphon_known(
-        tuple(phones), context=f"InventoryID {phoible_id}"
-    )
+    return _filter_panphon_known(tuple(phones), context=f"InventoryID {phoible_id}")
 
 
-@functools.lru_cache(maxsize=None)
-def _validate_vocab(vocab: Tuple[str, ...]) -> Tuple[str, ...]:
+@functools.cache
+def _validate_vocab(vocab: tuple[str, ...]) -> tuple[str, ...]:
     """Filter a user-supplied vocab to panphon-known phones (cached).
 
     Warns (once per unique input) about phones panphon doesn't recognize;
@@ -93,15 +84,11 @@ def _validate_vocab(vocab: Tuple[str, ...]) -> Tuple[str, ...]:
     """
     phones = _filter_panphon_known(vocab, context="user-supplied vocab")
     if not phones:
-        raise ValueError(
-            "vocab has no panphon-known phones after filtering."
-        )
+        raise ValueError("vocab has no panphon-known phones after filtering.")
     return phones
 
 
-def _filter_panphon_known(
-    phones: Sequence[str], *, context: str
-) -> Tuple[str, ...]:
+def _filter_panphon_known(phones: Sequence[str], *, context: str) -> tuple[str, ...]:
     """Reduce a phone list to the panphon segments it's composed of.
 
     Phoible sometimes spells a "phone" as several IPA segments (e.g. the
@@ -149,7 +136,7 @@ def _inventory_dialect(series):
     return specified.iloc[0] if not specified.empty else series.iloc[0]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _resolve_lang(lang: str) -> int:
     """Resolve a language name to a single Phoible InventoryID.
 
@@ -182,9 +169,7 @@ def _resolve_lang(lang: str) -> int:
         # is dialect-free, fall back to the smallest InventoryID overall.
         dialect_free = [i for i in inv_ids if pd.isna(dialect_per_id[i])]
         chosen = dialect_free[0] if dialect_free else inv_ids[0]
-        id_dialect_lines = ", ".join(
-            f"{i}: {dialect_per_id[i]!r}" for i in inv_ids
-        )
+        id_dialect_lines = ", ".join(f"{i}: {dialect_per_id[i]!r}" for i in inv_ids)
         warnings.warn(
             f"Phoible has {len(inv_ids)} inventories for {lang!r} "
             f"({id_dialect_lines}); picking {chosen} "
@@ -194,8 +179,7 @@ def _resolve_lang(lang: str) -> int:
         )
         return chosen
     raise ValueError(
-        f"Language {lang!r} not found in Phoible "
-        "(LanguageName / ISO6393 / Glottocode)."
+        f"Language {lang!r} not found in Phoible (LanguageName / ISO6393 / Glottocode)."
     )
 
 
@@ -218,7 +202,7 @@ class Recognizer:
         self.hparams = {**self.default_hparams(), **(hparams or {})}
 
     @staticmethod
-    def _build_predmat(featnames) -> Tuple[List[str], np.ndarray]:
+    def _build_predmat(featnames) -> tuple[list[str], np.ndarray]:
         """Build the full-panphon predmat aligned to ``featnames``.
 
         Always uses every panphon-known phone with ``cons != 0``; the
@@ -228,16 +212,11 @@ class Recognizer:
         ft = panphon.FeatureTable()
         panphon_names = ft.fts("a").names
         full_featnames = (
-            ["silence+"]
-            + [f"{n}+" for n in panphon_names]
-            + [f"{n}-" for n in panphon_names]
+            ["silence+"] + [f"{n}+" for n in panphon_names] + [f"{n}-" for n in panphon_names]
         )
         name_to_full_idx = {n: i for i, n in enumerate(full_featnames)}
         state_names = {"closure+", "closure-", "release+", "release-"}
-        missing = [
-            n for n in featnames
-            if n not in name_to_full_idx and n not in state_names
-        ]
+        missing = [n for n in featnames if n not in name_to_full_idx and n not in state_names]
         if missing:
             raise ValueError(
                 "Featnames not derivable from panphon's feature table: "
@@ -251,9 +230,7 @@ class Recognizer:
                 vocab.append(k)
                 feats = v.numeric()
                 rows.append(
-                    [0]
-                    + [1 if n == 1 else 0 for n in feats]
-                    + [1 if n == -1 else 0 for n in feats]
+                    [0] + [1 if n == 1 else 0 for n in feats] + [1 if n == -1 else 0 for n in feats]
                 )
         full_predmat = np.asarray(rows, dtype=np.float32)
 
@@ -268,7 +245,7 @@ class Recognizer:
         sums = np.where(sums > 0, sums, 1.0)
         return vocab, predmat / sums
 
-    def _phones_to_mask(self, phones: Tuple[str, ...]) -> np.ndarray:
+    def _phones_to_mask(self, phones: tuple[str, ...]) -> np.ndarray:
         """Vocab indices for the given phones; cached per phones-tuple.
 
         Silence ``"_"`` is always included so silence-snapped frames can
@@ -277,11 +254,7 @@ class Recognizer:
         cached = self._mask_cache.get(phones)
         if cached is not None:
             return cached
-        idxs = {
-            self._vocab_to_idx[p]
-            for p in phones
-            if p in self._vocab_to_idx
-        }
+        idxs = {self._vocab_to_idx[p] for p in phones if p in self._vocab_to_idx}
         if "_" in self._vocab_to_idx:
             idxs.add(self._vocab_to_idx["_"])
         mask = np.array(sorted(idxs), dtype=np.int64)
@@ -291,25 +264,19 @@ class Recognizer:
     def _resolve_vocab(
         self,
         *,
-        lang: Optional[str],
-        phoible_id: Optional[int],
+        lang: str | None,
+        phoible_id: int | None,
         phoneme: bool,
-        vocab: Optional[Sequence[str]],
-    ) -> Optional[Tuple[str, ...]]:
+        vocab: Sequence[str] | None,
+    ) -> tuple[str, ...] | None:
         """Pick the constrained phone set from one of the vocab args.
 
         Returns ``None`` for "no constraint" (full panphon vocab). Raises
         on conflicting / inconsistent argument combinations.
         """
-        sources = sum(
-            1
-            for x in (lang, phoible_id, vocab)
-            if x is not None
-        )
+        sources = sum(1 for x in (lang, phoible_id, vocab) if x is not None)
         if sources > 1:
-            raise ValueError(
-                "Pass at most one of `vocab=`, `lang=`, or `phoible_id=`."
-            )
+            raise ValueError("Pass at most one of `vocab=`, `lang=`, or `phoible_id=`.")
         if phoneme and vocab is not None:
             raise ValueError(
                 "phoneme=True is only meaningful with a Phoible language "
@@ -338,12 +305,12 @@ class Recognizer:
         posteriogram,
         boundaries,
         *,
-        lang: Optional[str] = None,
-        phoible_id: Optional[int] = None,
+        lang: str | None = None,
+        phoible_id: int | None = None,
         phoneme: bool = False,
-        vocab: Optional[Sequence[str]] = None,
+        vocab: Sequence[str] | None = None,
         dedup: bool = True,
-    ) -> List[Tuple[int, int, str]]:
+    ) -> list[tuple[int, int, str]]:
         """Label each segment defined by ``boundaries`` via center pooling.
 
         Args:
@@ -362,9 +329,7 @@ class Recognizer:
         Returns ``list[(start_frame, end_frame, label)]`` (frame-based; the
         caller handles frame→time conversion).
         """
-        phones = self._resolve_vocab(
-            lang=lang, phoible_id=phoible_id, phoneme=phoneme, vocab=vocab
-        )
+        phones = self._resolve_vocab(lang=lang, phoible_id=phoible_id, phoneme=phoneme, vocab=vocab)
 
         T = len(posteriogram)
         if T == 0:
@@ -393,15 +358,14 @@ class Recognizer:
             idxs = mask[masked.argmax(axis=1)]
 
         triples = [
-            (int(bs[i]), int(bs[i + 1]), self.vocab[int(idxs[i])])
-            for i in range(len(centers))
+            (int(bs[i]), int(bs[i + 1]), self.vocab[int(idxs[i])]) for i in range(len(centers))
         ]
         if not dedup:
             return triples
         # Merge consecutive segments that share a label: the same phone can't
         # sit side by side, so a boundary between same-labeled segments is
         # spurious — collapse them into one span (start of first, end of last).
-        merged: List[Tuple[int, int, str]] = []
+        merged: list[tuple[int, int, str]] = []
         for s, e, lab in triples:
             if merged and merged[-1][2] == lab:
                 merged[-1] = (merged[-1][0], e, lab)

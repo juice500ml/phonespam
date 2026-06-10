@@ -41,9 +41,7 @@ class SSLEncoder:
 
         self.stride_size = int(np.prod(self.model.config.conv_stride))
         rf, pref = 1, 1
-        for k, s in zip(
-            self.model.config.conv_kernel, self.model.config.conv_stride
-        ):
+        for k, s in zip(self.model.config.conv_kernel, self.model.config.conv_stride, strict=True):
             rf += (int(k) - 1) * pref
             pref *= int(s)
         self.window_size = int(rf)
@@ -87,7 +85,6 @@ class SSLEncoder:
         return np.clip(idx, 0, None)
 
     def frame_to_time(self, frame_indices: np.ndarray) -> np.ndarray:
-        """Map feature-frame indices (0-indexed) to times in seconds.
-        """
+        """Map feature-frame indices (0-indexed) to times in seconds."""
         idx = np.asarray(frame_indices, dtype=np.float64)
         return idx * self.stride_size / self.sr

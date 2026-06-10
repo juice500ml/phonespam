@@ -42,12 +42,9 @@ def _make_view_state(in_dim=4, n_feat=3, featnames=None, pos_vecs=None):
     }
 
 
-def _make_posteriogram_state(in_dim=4, n_feat=3, ipa_featnames=None,
-                             ipa_pos_vecs=None):
+def _make_posteriogram_state(in_dim=4, n_feat=3, ipa_featnames=None, ipa_pos_vecs=None):
     W = np.zeros((in_dim, n_feat), dtype=np.float32)
-    W[: min(in_dim, n_feat), : min(in_dim, n_feat)] = np.eye(
-        min(in_dim, n_feat), dtype=np.float32
-    )
+    W[: min(in_dim, n_feat), : min(in_dim, n_feat)] = np.eye(min(in_dim, n_feat), dtype=np.float32)
     return {
         "view": _make_view_state(in_dim, n_feat, ipa_featnames, ipa_pos_vecs),
         "W_bwd": W,
@@ -79,10 +76,9 @@ def _make_phone_model(monkeypatch, posteriogram, net_spec, *, n_feat=3):
     # the model. idx*stride/sr = idx*0.02 at 320/16k. Tests needing encoder
     # features stub extract_features directly.
     model._encoder = type(
-        "FakeEncoder", (),
-        {"frame_to_time": staticmethod(
-            lambda idxs: np.asarray(idxs, dtype=float) * 0.02
-        )},
+        "FakeEncoder",
+        (),
+        {"frame_to_time": staticmethod(lambda idxs: np.asarray(idxs, dtype=float) * 0.02)},
     )()
     return model
 
@@ -273,12 +269,11 @@ def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
     """When no candidate inventory is dialect-free, the smallest InventoryID
     is used (with a warning pointing at phoible.org for context)."""
     import pandas as pd
+
     from phonological_posteriogram.recognizer import _phoible, _resolve_lang
 
     df = _phoible()
-    inv_dialect = df.drop_duplicates("InventoryID").set_index(
-        "InventoryID"
-    )["SpecificDialect"]
+    inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
     counts = df.groupby("LanguageName")["InventoryID"].nunique()
     # A multi-inventory language where NONE is dialect-free (NaN) → smallest.
     name = None
@@ -299,12 +294,11 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
     """When one candidate inventory is dialect-free (SpecificDialect NaN),
     it is preferred over lower-numbered dialected inventories."""
     import pandas as pd
+
     from phonological_posteriogram.recognizer import _phoible, _resolve_lang
 
     df = _phoible()
-    inv_dialect = df.drop_duplicates("InventoryID").set_index(
-        "InventoryID"
-    )["SpecificDialect"]
+    inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
     counts = df.groupby("LanguageName")["InventoryID"].nunique()
     # A multi-inventory language with exactly one dialect-free (NaN) inventory
     # that is NOT the smallest ID — proves dialect-free beats smallest-ID.
@@ -325,7 +319,7 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
 def test_recognizer_load_inventory_helpers():
     """Phoible CSV is packaged and parses correctly; _load_inventory drops
     phones panphon doesn't recognize."""
-    from phonological_posteriogram.recognizer import _phoible, _load_inventory
+    from phonological_posteriogram.recognizer import _load_inventory, _phoible
 
     df = _phoible()
     # Pick the first inventory and verify allophone parsing.
@@ -352,9 +346,9 @@ def test_recognizer_is_pure_posteriogram_plus_boundaries():
     # [0,10), [10,20), [20,30) are 5, 15, 25 — arrange those to peak at
     # distinct features.
     posteriogram = np.full((30, 3), 0.1, dtype=np.float32)
-    posteriogram[5] = [0.9, 0.1, 0.1]    # → "_"
-    posteriogram[15] = [0.1, 0.9, 0.1]   # → "phone_0"
-    posteriogram[25] = [0.1, 0.1, 0.9]   # → "phone_1"
+    posteriogram[5] = [0.9, 0.1, 0.1]  # → "_"
+    posteriogram[15] = [0.1, 0.9, 0.1]  # → "phone_0"
+    posteriogram[25] = [0.1, 0.1, 0.9]  # → "phone_1"
 
     triples = rec.recognize(posteriogram, [10, 20])
     assert triples == [
@@ -383,12 +377,12 @@ def test_recognizer_vocab_constrains_output(monkeypatch):
     # Without a vocab constraint, the center of [0, 6) is frame 3 with
     # posteriogram aligned to "phone_1".
     posteriogram = np.full((6, 3), 0.1, dtype=np.float32)
-    posteriogram[3] = [0.1, 0.1, 0.9]   # → "phone_1" unconstrained
+    posteriogram[3] = [0.1, 0.1, 0.9]  # → "phone_1" unconstrained
     assert rec.recognize(posteriogram, []) == [(0, 6, "phone_1")]
 
     # With vocab=["phone_0"], "phone_1" is masked out. Silence "_" is
     # always allowed; with the asymmetric scores below, phone_0 wins.
-    posteriogram[3] = [0.1, 0.5, 0.9]   # silence=0.1, phone_0=0.5, phone_1=0.9
+    posteriogram[3] = [0.1, 0.5, 0.9]  # silence=0.1, phone_0=0.5, phone_1=0.9
     triples = rec.recognize(posteriogram, [], vocab=["phone_0"])
     assert triples == [(0, 6, "phone_0")]
 
@@ -465,9 +459,7 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     state = _make_posteriogram_state(in_dim=4)
     state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
-    model = _make_phone_model(
-        monkeypatch, post, NET_SPEC
-    )
+    model = _make_phone_model(monkeypatch, post, NET_SPEC)
 
     extract_calls = {"n": 0}
 
@@ -480,10 +472,11 @@ def test_phone_model_recognize_returns_segmentation_units(monkeypatch):
     # Stub the segmenter factory to return a tiny object whose .segment
     # returns fixed boundaries.
     monkeypatch.setattr(
-        model, "segmenter",
-        lambda overrides=None: type("S", (), {
-            "segment": lambda self, f, w, **k: np.array([10, 20])
-        })(),
+        model,
+        "segmenter",
+        lambda overrides=None: type(
+            "S", (), {"segment": lambda self, f, w, **k: np.array([10, 20])}
+        )(),
     )
 
     units = model.recognize(np.zeros(16000, dtype=np.float32))
@@ -507,14 +500,16 @@ def test_phone_model_recognize_dedup_optional(monkeypatch):
     post = PhonologicalPosteriogram.from_state(state)
     model = _make_phone_model(monkeypatch, post, NET_SPEC)
     monkeypatch.setattr(
-        model, "extract_features",
+        model,
+        "extract_features",
         lambda w: np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (30, 1)),
     )
     monkeypatch.setattr(
-        model, "segmenter",
-        lambda overrides=None: type("S", (), {
-            "segment": lambda self, f, w, **k: np.array([10, 20])
-        })(),
+        model,
+        "segmenter",
+        lambda overrides=None: type(
+            "S", (), {"segment": lambda self, f, w, **k: np.array([10, 20])}
+        )(),
     )
 
     # All 3 segments label "_" (silence-high posteriogram).
@@ -532,9 +527,7 @@ def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
     state = _make_posteriogram_state(in_dim=4)
     state["view"]["pos_vecs"][0] = [10, 0, 0, 0]
     post = PhonologicalPosteriogram.from_state(state)
-    model = _make_phone_model(
-        monkeypatch, post, NET_SPEC
-    )
+    model = _make_phone_model(monkeypatch, post, NET_SPEC)
 
     load_calls = []
 
@@ -544,14 +537,14 @@ def test_phone_model_recognize_accepts_filename(monkeypatch, tmp_path):
 
     monkeypatch.setattr(PhoneModel, "load_audio", fake_load_audio)
     monkeypatch.setattr(
-        model, "extract_features",
+        model,
+        "extract_features",
         lambda w: np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (10, 1)),
     )
     monkeypatch.setattr(
-        model, "segmenter",
-        lambda overrides=None: type("S", (), {
-            "segment": lambda self, f, w, **k: np.array([5])
-        })(),
+        model,
+        "segmenter",
+        lambda overrides=None: type("S", (), {"segment": lambda self, f, w, **k: np.array([5])})(),
     )
 
     fake_path = tmp_path / "speech.wav"
@@ -581,14 +574,14 @@ def test_phone_model_recognize_resamples_with_warning(monkeypatch):
 
     monkeypatch.setattr(pm, "librosa", FakeLibrosa())
     monkeypatch.setattr(
-        model, "extract_features",
+        model,
+        "extract_features",
         lambda w: np.zeros((5, 4), dtype=np.float32),
     )
     monkeypatch.setattr(
-        model, "segmenter",
-        lambda overrides=None: type("S", (), {
-            "segment": lambda self, f, w, **k: np.array([])
-        })(),
+        model,
+        "segmenter",
+        lambda overrides=None: type("S", (), {"segment": lambda self, f, w, **k: np.array([])})(),
     )
 
     waveform = np.zeros(8000, dtype=np.float32)
@@ -613,18 +606,19 @@ def test_phone_model_recognize_ignores_sr_when_path_supplied(monkeypatch, tmp_pa
     model = _make_phone_model(monkeypatch, post, dict(NET_SPEC))
 
     monkeypatch.setattr(
-        PhoneModel, "load_audio",
+        PhoneModel,
+        "load_audio",
         lambda self, p: np.zeros(NET_SPEC["sr"], dtype=np.float32),
     )
     monkeypatch.setattr(
-        model, "extract_features",
+        model,
+        "extract_features",
         lambda w: np.zeros((5, 4), dtype=np.float32),
     )
     monkeypatch.setattr(
-        model, "segmenter",
-        lambda overrides=None: type("S", (), {
-            "segment": lambda self, f, w, **k: np.array([])
-        })(),
+        model,
+        "segmenter",
+        lambda overrides=None: type("S", (), {"segment": lambda self, f, w, **k: np.array([])})(),
     )
 
     path = tmp_path / "f.wav"
@@ -642,8 +636,7 @@ def test_phone_model_segmenter_hparam_override(monkeypatch):
     assert seg_a.posteriogram is seg_b.posteriogram  # weights not copied
     assert seg_b.hparams["combined_prominence"] == 0.25
     assert (
-        seg_a.hparams["combined_prominence"]
-        == Segmenter.default_hparams()["combined_prominence"]
+        seg_a.hparams["combined_prominence"] == Segmenter.default_hparams()["combined_prominence"]
     )
 
 
@@ -697,9 +690,7 @@ def test_pair_distance_methods():
     # Cosine: identical rows -> 0; orthogonal rows -> 1.
     np.testing.assert_allclose(_pair_distance(a, b, "cosine"), [0.0, 1.0])
     # L2: ||(0,0)|| = 0; ||(1,-1)|| = sqrt(2).
-    np.testing.assert_allclose(
-        _pair_distance(a, b, "l2"), [0.0, np.sqrt(2)]
-    )
+    np.testing.assert_allclose(_pair_distance(a, b, "l2"), [0.0, np.sqrt(2)])
     # Cosine zero-norm fallback: 1.0.
     zeros = np.zeros_like(a)
     np.testing.assert_array_equal(_pair_distance(a, zeros, "cosine"), [1.0, 1.0])
@@ -724,6 +715,7 @@ def test_segmenter_distance_hparam(distance):
     feats = np.random.default_rng(2).normal(size=(30, 4)).astype(np.float32)
     preds = seg.segment(feats, np.zeros(9600, dtype=np.float32))
     assert isinstance(preds, np.ndarray)
+
 
 def _phn_row(timit_phn, mn, mx, ipa, audio="u.wav"):
     """Build a minimal pre-merge TIMIT row dict (matches _prepare_timit)."""
@@ -778,8 +770,8 @@ def test_merge_stop_closures_affricate_and_double_closure():
     prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
 
     rows = [
-        _phn_row("dcl", 0.00, 0.04, "d"),   # standalone (next is another dcl)
-        _phn_row("dcl", 0.04, 0.08, "d"),   # closure of the following jh
+        _phn_row("dcl", 0.00, 0.04, "d"),  # standalone (next is another dcl)
+        _phn_row("dcl", 0.04, 0.08, "d"),  # closure of the following jh
         _phn_row("jh", 0.08, 0.15, "d͡ʒ"),
     ]
     out = prep._merge_stop_closures(rows)
@@ -795,7 +787,7 @@ def test_merge_stop_closures_release_without_closure_unchanged():
 
     rows = [
         _phn_row("iy", 0.00, 0.10, "i"),
-        _phn_row("b", 0.10, 0.15, "b"),   # release, but prev is a vowel
+        _phn_row("b", 0.10, 0.15, "b"),  # release, but prev is a vowel
     ]
     out = prep._merge_stop_closures(rows)
     assert [r["timit_phn"] for r in out] == ["iy", "b"]
@@ -918,12 +910,12 @@ def test_evaluator_strict_vs_lenient():
         SegmentationUnit(0.0, 0.105),
         SegmentationUnit(0.105, 0.115),
     ]
-    lenient = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="lenient"
-    ).evaluate_boundaries(pred, gt)
-    strict = SegmentationEvaluator(
-        tolerance_ms=20, match_mode="strict"
-    ).evaluate_boundaries(pred, gt)
+    lenient = SegmentationEvaluator(tolerance_ms=20, match_mode="lenient").evaluate_boundaries(
+        pred, gt
+    )
+    strict = SegmentationEvaluator(tolerance_ms=20, match_mode="strict").evaluate_boundaries(
+        pred, gt
+    )
 
     # 3 pred boundaries, 2 GT boundaries.
     # Lenient precision: all 3 pred are within tol of some GT → 3/3 = 1.0
@@ -1001,9 +993,9 @@ def test_evaluator_forced_mode_includes_pbe_and_symbol_breakdown():
         SegmentationUnit(0.01, 0.11, "a"),
         SegmentationUnit(0.11, 0.21, "b"),
     ]
-    res = SegmentationEvaluator(
-        tolerance_ms=20, forced=True
-    ).evaluate_boundaries(pred, gt, symbols=["a", "b"])
+    res = SegmentationEvaluator(tolerance_ms=20, forced=True).evaluate_boundaries(
+        pred, gt, symbols=["a", "b"]
+    )
 
     assert "pbe_mean" in res
     assert res["pbe_mean"] == pytest.approx(10.0, abs=1e-3)  # 10 ms shift
@@ -1026,9 +1018,7 @@ def test_evaluator_batch_aggregates_micro_and_macro():
         "u1": [SegmentationUnit(0.0, 0.1), SegmentationUnit(0.1, 0.2)],
         "u2": [SegmentationUnit(0.0, 0.1)],
     }
-    agg = SegmentationEvaluator(tolerance_ms=20).evaluate_batch(
-        batch_pred, batch_gt
-    )
+    agg = SegmentationEvaluator(tolerance_ms=20).evaluate_batch(batch_pred, batch_gt)
 
     # Unique boundary counts:
     #   u1 pred {0.0, 0.1, 0.2} = 3,  u1 gt {0.0, 0.1, 0.2} = 3 (all match)
@@ -1180,9 +1170,7 @@ class _FakeRecognizerForEval:
     def recognize(self, posteriogram, boundaries, **kw):
         T = len(posteriogram)
         bs = np.unique(
-            np.concatenate(
-                [np.asarray([0]), np.asarray(boundaries, dtype=int), np.asarray([T])]
-            )
+            np.concatenate([np.asarray([0]), np.asarray(boundaries, dtype=int), np.asarray([T])])
         )
         return [
             (int(bs[i]), int(bs[i + 1]), self.LABELS[i % len(self.LABELS)])
@@ -1242,29 +1230,34 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
             return _frame_to_time(idxs)
 
         def recognize(
-            self, audio, *, sr=None, lang=None, phoible_id=None,
-            phoneme=False, vocab=None,
+            self,
+            audio,
+            *,
+            sr=None,
+            lang=None,
+            phoible_id=None,
+            phoneme=False,
+            vocab=None,
         ):
             if isinstance(audio, str | Path):
                 waveform = self.load_audio(audio)
             else:
                 waveform = np.asarray(audio, dtype=np.float32)
-            posteriogram = self.posteriogram.project(
-                self.extract_features(waveform)
-            )
+            posteriogram = self.posteriogram.project(self.extract_features(waveform))
             triples = self.recognizer.recognize(
                 posteriogram,
                 np.asarray(internal_boundaries, dtype=int),
-                lang=lang, phoible_id=phoible_id, phoneme=phoneme, vocab=vocab,
+                lang=lang,
+                phoible_id=phoible_id,
+                phoneme=phoneme,
+                vocab=vocab,
             )
             if not triples:
                 return []
             starts = self.frame_to_time(np.array([t[0] for t in triples]))
             ends = self.frame_to_time(np.array([t[1] for t in triples]))
             return [
-                SegmentationUnit(
-                    float(starts[i]), float(ends[i]), triples[i][2]
-                )
+                SegmentationUnit(float(starts[i]), float(ends[i]), triples[i][2])
                 for i in range(len(triples))
             ]
 
@@ -1298,7 +1291,8 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
     # 15 frames at 0.02s/frame → last segment ends at 0.30s, matching GT.
     fake_model = _make_fake_eval_model(internal_boundaries=[5, 10], n_frames=15)
     monkeypatch.setattr(
-        ev.PhoneModel, "from_pretrained",
+        ev.PhoneModel,
+        "from_pretrained",
         classmethod(lambda cls, *a, **kw: fake_model),
     )
     # Stub out the panphon-using PhoneRecognitionEvaluator for speed.
@@ -1306,9 +1300,12 @@ def test_training_evaluate_end_to_end(tmp_path, monkeypatch):
 
     args = ev._get_args(
         [
-            "--model", "ignored",
-            "--dataset_csv", str(csv_path),
-            "--split", "test",
+            "--model",
+            "ignored",
+            "--dataset_csv",
+            str(csv_path),
+            "--split",
+            "test",
         ]
     )
     results = ev.run(args)
@@ -1336,18 +1333,15 @@ def test_training_evaluate_fails_fast_on_missing_audio(tmp_path, monkeypatch):
         }
     ).to_csv(csv_path, index=False)
 
-    fake_model = _make_fake_eval_model(
-        internal_boundaries=[15], bad_paths=("bad.wav",)
-    )
+    fake_model = _make_fake_eval_model(internal_boundaries=[15], bad_paths=("bad.wav",))
     monkeypatch.setattr(
-        ev.PhoneModel, "from_pretrained",
+        ev.PhoneModel,
+        "from_pretrained",
         classmethod(lambda cls, *a, **kw: fake_model),
     )
     monkeypatch.setattr(ev, "PhoneRecognitionEvaluator", _FakeRecogEval)
 
-    args = ev._get_args(
-        ["--model", "ignored", "--dataset_csv", str(csv_path)]
-    )
+    args = ev._get_args(["--model", "ignored", "--dataset_csv", str(csv_path)])
     with pytest.raises(FileNotFoundError, match="bad\\.wav"):
         ev.run(args)
 
@@ -1355,9 +1349,7 @@ def test_training_evaluate_fails_fast_on_missing_audio(tmp_path, monkeypatch):
 def test_add_phone_context_adjacent_diphthongs():
     """Two diphthongs back-to-back: each splits independently."""
     pd = pytest.importorskip("pandas")
-    prep = pytest.importorskip(
-        "phonological_posteriogram.training.prepare_datasets"
-    )
+    prep = pytest.importorskip("phonological_posteriogram.training.prepare_datasets")
 
     df = pd.DataFrame(
         {
@@ -1430,19 +1422,17 @@ def _make_synthetic_features_pkl(tmp_path):
 def test_training_train_requires_features_attrs(tmp_path):
     """Missing df.attrs keys produce a clear error, not an opaque crash."""
     pd = pytest.importorskip("pandas")
-    train_mod = pytest.importorskip(
-        "phonological_posteriogram.training.train"
-    )
+    train_mod = pytest.importorskip("phonological_posteriogram.training.train")
 
     pkl_path = tmp_path / "bad.pkl"
-    pd.DataFrame({"ipa": ["a"], "feat": [np.zeros(4, dtype=np.float32)]}).to_pickle(
-        pkl_path
-    )
+    pd.DataFrame({"ipa": ["a"], "feat": [np.zeros(4, dtype=np.float32)]}).to_pickle(pkl_path)
 
     args = train_mod._get_args(
         [
-            "--features_pkl", str(pkl_path),
-            "--output_dir", str(tmp_path / "out"),
+            "--features_pkl",
+            str(pkl_path),
+            "--output_dir",
+            str(tmp_path / "out"),
         ]
     )
     with pytest.raises(ValueError, match="df.attrs"):
@@ -1451,17 +1441,17 @@ def test_training_train_requires_features_attrs(tmp_path):
 
 def test_training_train_end_to_end(tmp_path):
     """Fit on a synthetic features pkl, save, and reload via from_pretrained."""
-    train_mod = pytest.importorskip(
-        "phonological_posteriogram.training.train"
-    )
+    train_mod = pytest.importorskip("phonological_posteriogram.training.train")
 
     pkl_path = _make_synthetic_features_pkl(tmp_path)
     out_dir = tmp_path / "trained"
 
     args = train_mod._get_args(
         [
-            "--features_pkl", str(pkl_path),
-            "--output_dir", str(out_dir),
+            "--features_pkl",
+            str(pkl_path),
+            "--output_dir",
+            str(out_dir),
         ]
     )
     out = train_mod.run(args)
@@ -1525,18 +1515,16 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
         )
     )
 
-    model = _make_phone_model(
-        monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC)
-    )
+    model = _make_phone_model(monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC))
     monkeypatch.setattr(
-        tune.PhoneModel, "from_pretrained",
+        tune.PhoneModel,
+        "from_pretrained",
         classmethod(lambda cls, *a, **kw: model),
     )
     monkeypatch.setattr(
-        PhoneModel, "load_audio",
-        lambda self, path: np.zeros(
-            int(0.3 * self.net_spec["sr"]), dtype=np.float32
-        ),
+        PhoneModel,
+        "load_audio",
+        lambda self, path: np.zeros(int(0.3 * self.net_spec["sr"]), dtype=np.float32),
     )
 
     # Count encoder calls — must be once per utterance, not per candidate.
@@ -1557,9 +1545,12 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
 
     args = tune._get_args(
         [
-            "--model", "ignored",
-            "--dataset_csv", str(csv_path),
-            "--hparams_json", str(grid_path),
+            "--model",
+            "ignored",
+            "--dataset_csv",
+            str(csv_path),
+            "--hparams_json",
+            str(grid_path),
         ]
     )
     results = tune.run(args)
@@ -1595,9 +1586,7 @@ def test_tune_known_lang_kwargs_resolves_per_utterance(monkeypatch):
     monkeypatch.setattr(tune, "_resolve_lang", _fake_resolve)
 
     with pytest.warns(UserWarning, match="Could not resolve"):
-        out = tune._resolve_known_lang_kwargs(
-            df, ["a.wav", "b.wav", "c.wav"]
-        )
+        out = tune._resolve_known_lang_kwargs(df, ["a.wav", "b.wav", "c.wav"])
     assert out["a.wav"]["phoible_id"] == 11
     assert out["b.wav"]["phoible_id"] == 22
     # Unresolved language → no constraint for that utterance.
@@ -1655,22 +1644,21 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
         )
     )
 
-    model = _make_phone_model(
-        monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC)
-    )
+    model = _make_phone_model(monkeypatch, _make_posteriogram(in_dim=4), dict(NET_SPEC))
     monkeypatch.setattr(
-        tune.PhoneModel, "from_pretrained",
+        tune.PhoneModel,
+        "from_pretrained",
         classmethod(lambda cls, *a, **kw: model),
     )
     monkeypatch.setattr(
-        PhoneModel, "load_audio",
-        lambda self, path: np.zeros(
-            int(0.3 * self.net_spec["sr"]), dtype=np.float32
-        ),
+        PhoneModel,
+        "load_audio",
+        lambda self, path: np.zeros(int(0.3 * self.net_spec["sr"]), dtype=np.float32),
     )
     rng = np.random.default_rng(0)
     monkeypatch.setattr(
-        model, "extract_features",
+        model,
+        "extract_features",
         lambda w: rng.normal(size=(30, 4)).astype(np.float32),
     )
     model.recognizer = _FakeRecognizerForEval()
@@ -1678,14 +1666,18 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
     # Each candidate triggers TWO evaluate_batch calls (known + unknown
     # recognizer pass). Give each candidate a distinct known PER and a
     # distinct unknown PER so the test can verify both end up in the dict.
-    sequence = iter([
-        (0.5, 0.7),  # cand 0: (known_per, unknown_per)
-        (0.1, 0.3),  # cand 1: (known_per, unknown_per)
-    ])
+    sequence = iter(
+        [
+            (0.5, 0.7),  # cand 0: (known_per, unknown_per)
+            (0.1, 0.3),  # cand 1: (known_per, unknown_per)
+        ]
+    )
     current = {"known": None, "unknown": None, "toggle": 0}
 
     class _OrderedRecogEval:
-        def __init__(self, *_, **__): pass
+        def __init__(self, *_, **__):
+            pass
+
         def evaluate_batch(self, p, g):
             if current["toggle"] == 0:
                 current["known"], current["unknown"] = next(sequence)
@@ -1694,7 +1686,8 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
                 v = current["unknown"]
             current["toggle"] ^= 1
             return {
-                "per": v, "pfer": 0.0,
+                "per": v,
+                "pfer": 0.0,
                 "n_utterances": len(g),
             }
 
@@ -1702,10 +1695,14 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
 
     args = tune._get_args(
         [
-            "--model", "ignored",
-            "--dataset_csv", str(csv_path),
-            "--hparams_json", str(grid_path),
-            "--metric", "known_per",
+            "--model",
+            "ignored",
+            "--dataset_csv",
+            str(csv_path),
+            "--hparams_json",
+            str(grid_path),
+            "--metric",
+            "known_per",
         ]
     )
     results = tune.run(args)
@@ -1717,10 +1714,7 @@ def test_training_tune_lower_is_better_for_known_per(tmp_path, monkeypatch):
         assert "known_per" in r["metrics"] and "unknown_per" in r["metrics"]
         assert "known_pfer" in r["metrics"] and "unknown_pfer" in r["metrics"]
     # And they're distinct on at least one candidate (sanity).
-    assert any(
-        r["metrics"]["known_per"] != r["metrics"]["unknown_per"]
-        for r in results
-    )
+    assert any(r["metrics"]["known_per"] != r["metrics"]["unknown_per"] for r in results)
 
 
 def test_tune_cli_rejects_removed_args():
@@ -1729,8 +1723,6 @@ def test_tune_cli_rejects_removed_args():
 
     base = ["--model", "x", "--dataset_csv", "y", "--hparams_json", "z"]
     for removed in ("--lang", "--phoible_id", "--phoneme", "--vocab"):
-        argv = base + (
-            [removed, "English"] if removed != "--phoneme" else [removed]
-        )
+        argv = base + ([removed, "English"] if removed != "--phoneme" else [removed])
         with pytest.raises(SystemExit):
             tune._get_args(argv)

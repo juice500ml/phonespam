@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -11,35 +10,78 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-
 TIMIT_TO_IPA = {
     # Stops
-    "b": "b", "d": "d", "g": "ɡ", "p": "p",
-    "t": "t", "k": "k", "dx": "ɾ", "q": "ʔ",
+    "b": "b",
+    "d": "d",
+    "g": "ɡ",
+    "p": "p",
+    "t": "t",
+    "k": "k",
+    "dx": "ɾ",
+    "q": "ʔ",
     # Affricates
-    "jh": "d͡ʒ", "ch": "t͡ʃ",
+    "jh": "d͡ʒ",
+    "ch": "t͡ʃ",
     # Fricatives
-    "s": "s", "sh": "ʃ", "z": "z", "zh": "ʒ",
-    "f": "f", "th": "θ", "v": "v", "dh": "ð",
+    "s": "s",
+    "sh": "ʃ",
+    "z": "z",
+    "zh": "ʒ",
+    "f": "f",
+    "th": "θ",
+    "v": "v",
+    "dh": "ð",
     # Nasals
-    "m": "m", "n": "n", "ng": "ŋ", "em": "m̩",
-    "en": "n̩", "eng": "ŋ̩", "nx": "ɾ̃",
+    "m": "m",
+    "n": "n",
+    "ng": "ŋ",
+    "em": "m̩",
+    "en": "n̩",
+    "eng": "ŋ̩",
+    "nx": "ɾ̃",
     # Semivowels and glides
-    "l": "l", "r": "ɹ", "w": "w", "y": "j",
-    "hh": "h", "hv": "ɦ", "el": "l̩",
+    "l": "l",
+    "r": "ɹ",
+    "w": "w",
+    "y": "j",
+    "hh": "h",
+    "hv": "ɦ",
+    "el": "l̩",
     # Vowels
-    "iy": "i", "ih": "ɪ", "eh": "ɛ", "ae": "æ",
-    "aa": "ɑ", "ah": "ʌ", "ao": "ɔ", "uh": "ʊ",
-    "uw": "u", "ux": "ʉ", "er": "ɜ˞", "ax": "ə",
-    "ix": "ɨ", "axr": "ə˞", "ax-h": "ə̥",
+    "iy": "i",
+    "ih": "ɪ",
+    "eh": "ɛ",
+    "ae": "æ",
+    "aa": "ɑ",
+    "ah": "ʌ",
+    "ao": "ɔ",
+    "uh": "ʊ",
+    "uw": "u",
+    "ux": "ʉ",
+    "er": "ɜ˞",
+    "ax": "ə",
+    "ix": "ɨ",
+    "axr": "ə˞",
+    "ax-h": "ə̥",
     # Diphthongs
-    "ey": "eɪ", "aw": "aʊ", "ay": "aɪ", "oy": "ɔɪ", "ow": "oʊ",
+    "ey": "eɪ",
+    "aw": "aʊ",
+    "ay": "aɪ",
+    "oy": "ɔɪ",
+    "ow": "oʊ",
     # Stop closures: will be dropped after being merged into the succeeding stop.
-    "bcl": "b", "dcl": "d", "gcl": "ɡ",
-    "pcl": "p", "tcl": "t", "kcl": "k",
+    "bcl": "b",
+    "dcl": "d",
+    "gcl": "ɡ",
+    "pcl": "p",
+    "tcl": "t",
+    "kcl": "k",
     # Non-speech: kept as the silence token "_" so the segmenter sees silence
     # frames during training.
-    "pau": "_", "epi": "_", "h#": "_",
+    "pau": "_",
+    "epi": "_",
+    "h#": "_",
 }
 TIMIT_CLOSURE_OF = {
     "b": "bcl",
@@ -71,9 +113,7 @@ DIPHTHONG_PARTS = {
 def _get_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_path", type=Path, help="Path to dataset")
-    parser.add_argument(
-        "--dataset_type", type=str, choices=["timit", "voxangeles"]
-    )
+    parser.add_argument("--dataset_type", type=str, choices=["timit", "voxangeles"])
     parser.add_argument("--output_dir", type=Path, help="Output csv folder")
     return parser.parse_args(argv)
 
@@ -95,7 +135,7 @@ def _add_phone_context(df, n=5):
         orig_indices = []
         starts = []
         ends = []
-        for orig_idx, ipa in zip(group.index, group.ipa):
+        for orig_idx, ipa in zip(group.index, group.ipa, strict=True):
             start = len(expanded)
             expanded.extend(DIPHTHONG_PARTS.get(ipa, (ipa,)))
             orig_indices.append(orig_idx)
@@ -144,11 +184,7 @@ def _merge_stop_closures(utt_rows):
     merged = []
     for row in utt_rows:
         phn = row["timit_phn"]
-        if (
-            merged
-            and phn in TIMIT_CLOSURE_OF
-            and merged[-1]["timit_phn"] == TIMIT_CLOSURE_OF[phn]
-        ):
+        if merged and phn in TIMIT_CLOSURE_OF and merged[-1]["timit_phn"] == TIMIT_CLOSURE_OF[phn]:
             # Previous row is this release's closure: extend the release back
             # over the closure's span and replace the closure row with it.
             merged[-1] = {**row, "min": merged[-1]["min"]}
@@ -209,9 +245,8 @@ def _prepare_timit(timit_path: Path, mode: str = "merged"):
     # ``case_sensitive=False`` kwarg so this stays 3.8+ compatible.
     rows = []
     for split in ("TRAIN", "TEST"):
-        wav_paths = (
-            sorted(timit_path.glob(f"**/{split}/**/*.WAV"))
-            or sorted(timit_path.glob(f"**/{split.lower()}/**/*.wav"))
+        wav_paths = sorted(timit_path.glob(f"**/{split}/**/*.WAV")) or sorted(
+            timit_path.glob(f"**/{split.lower()}/**/*.wav")
         )
         for audio_path in tqdm(wav_paths, desc=f"TIMIT {split}"):
             phn_path = next(
@@ -273,9 +308,7 @@ def _prepare_voxangeles(root_path: Path):
         # Keep empty intervals so the phone rows tile the full audio
         # (leading/trailing silence and internal gaps included).
         grid = praatio.textgrid.openTextgrid(path, includeEmptyIntervals=True)
-        tier_name = next(
-            x for x in grid.tierNames if x in ("phone", "phones", "Narrow")
-        )
+        tier_name = next(x for x in grid.tierNames if x in ("phone", "phones", "Narrow"))
         utt_rows = []
         for entry in grid.getTier(tier_name).entries:
             label = (entry.label or "").strip()

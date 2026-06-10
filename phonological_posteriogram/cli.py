@@ -84,16 +84,12 @@ def main(argv=None):
             "surface Allophones (requires --lang or --phoible_id)."
         ),
     )
-    parser.add_argument(
-        "--device", default="cpu", help="Torch device (cpu, cuda:0, ...)."
-    )
+    parser.add_argument("--device", default="cpu", help="Torch device (cpu, cuda:0, ...).")
     args = parser.parse_args(argv)
 
     model = PhoneModel.from_pretrained(args.model, device=args.device)
 
-    vocab = (
-        [p for p in args.vocab.split(",") if p] if args.vocab is not None else None
-    )
+    vocab = [p for p in args.vocab.split(",") if p] if args.vocab is not None else None
 
     units = model.recognize(
         args.audio,

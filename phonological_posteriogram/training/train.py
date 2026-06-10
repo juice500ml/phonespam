@@ -130,9 +130,7 @@ def run(args):
 
     if args.split != "both":
         if "split" not in df.columns:
-            raise ValueError(
-                "--split was set but the features pickle has no `split` column."
-            )
+            raise ValueError("--split was set but the features pickle has no `split` column.")
         df = df[df.split == args.split].reset_index(drop=True)
 
     # Sample-efficiency ablations: drop a deterministic fraction of whole
@@ -140,9 +138,7 @@ def run(args):
     # a kept utterance are all retained.
     if args.audio_fraction < 1.0:
         if not 0.0 < args.audio_fraction <= 1.0:
-            raise ValueError(
-                f"--audio_fraction must be in (0, 1]; got {args.audio_fraction}"
-            )
+            raise ValueError(f"--audio_fraction must be in (0, 1]; got {args.audio_fraction}")
         paths = np.sort(df.audio_path.unique())
         k = max(1, int(round(len(paths) * args.audio_fraction)))
         rng = np.random.default_rng(args.seed)
@@ -168,15 +164,12 @@ def run(args):
         overrides = json.loads(args.hparams_overrides)
         if not isinstance(overrides, dict):
             raise ValueError(
-                "--hparams_overrides must be a JSON object (dict), got "
-                f"{type(overrides).__name__}."
+                f"--hparams_overrides must be a JSON object (dict), got {type(overrides).__name__}."
             )
         hparams.update(overrides)
         print(f"Applied hparam overrides: {sorted(overrides)}")
 
-    model = PhoneModel(
-        posteriogram=posteriogram, net_spec=net_spec, hparams=hparams
-    )
+    model = PhoneModel(posteriogram=posteriogram, net_spec=net_spec, hparams=hparams)
     out = model.save_pretrained(args.output_dir, filename=args.filename)
     print(f"Saved model artifact to {out}")
     if args.push_to_hub:

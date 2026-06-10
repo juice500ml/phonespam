@@ -48,9 +48,7 @@ def _apply_activation(raw, act):
         return raw
     if act == "sigmoid":
         return 1.0 / (1.0 + np.exp(-raw))
-    raise ValueError(
-        f"Unknown activation {act!r}; choose one of {ACTIVATIONS}."
-    )
+    raise ValueError(f"Unknown activation {act!r}; choose one of {ACTIVATIONS}.")
 
 
 class _VectorView:
@@ -113,9 +111,7 @@ class _VectorView:
             elif ft.seg_known(v):
                 feats = ft.fts(v).numeric()
                 featmap[v] = (
-                    [0]
-                    + [1 if n == 1 else 0 for n in feats]
-                    + [1 if n == -1 else 0 for n in feats]
+                    [0] + [1 if n == 1 else 0 for n in feats] + [1 if n == -1 else 0 for n in feats]
                 )
         return names, featmap
 
@@ -127,8 +123,12 @@ class _VectorView:
             zero_phns = {p for p, v in featmap.items() if v[silence_plus_index] == 0}
         else:
             index = featnames.index(featname)
-            pos_phns = {p for p, v in featmap.items() if (v[index] == 1) & (v[silence_plus_index] == 0)}
-            zero_phns = {p for p, v in featmap.items() if (v[index] == 0) & (v[silence_plus_index] == 0)}
+            pos_phns = {
+                p for p, v in featmap.items() if (v[index] == 1) & (v[silence_plus_index] == 0)
+            }
+            zero_phns = {
+                p for p, v in featmap.items() if (v[index] == 0) & (v[silence_plus_index] == 0)
+            }
         return pos_phns, zero_phns
 
     @classmethod
@@ -139,12 +139,8 @@ class _VectorView:
         for featname in featnames:
             pos_phns, zero_phns = cls._split_phns(featname, featnames, featmap)
             if len(pos_phns) > 0 and len(zero_phns) > 0:
-                pos_samples = np.stack(
-                    df[df[group_col].isin(pos_phns)].feat.tolist()
-                )
-                zero_samples = np.stack(
-                    df[df[group_col].isin(zero_phns)].feat.tolist()
-                )
+                pos_samples = np.stack(df[df[group_col].isin(pos_phns)].feat.tolist())
+                zero_samples = np.stack(df[df[group_col].isin(zero_phns)].feat.tolist())
                 pos_vec = pos_samples.mean(0)
                 zero_vec = zero_samples.mean(0)
                 w = pos_vec - zero_vec
@@ -178,21 +174,13 @@ class _VectorView:
         itself is always kept — it is the silence channel the segmenter
         thresholds in :meth:`PhonologicalPosteriogram.predict_silence_mask`.
         """
-        silence_pos, silence_zero = self._split_phns(
-            "silence+", self.featnames, self.featmap
-        )
+        silence_pos, silence_zero = self._split_phns("silence+", self.featnames, self.featmap)
         keep = []
         for i, name in enumerate(self.featnames):
-            pos_phns, zero_phns = self._split_phns(
-                name, self.featnames, self.featmap
-            )
+            pos_phns, zero_phns = self._split_phns(name, self.featnames, self.featmap)
             if len(pos_phns) == 0 or len(zero_phns) == 0:
                 continue
-            if (
-                name != "silence+"
-                and pos_phns == silence_pos
-                and zero_phns == silence_zero
-            ):
+            if name != "silence+" and pos_phns == silence_pos and zero_phns == silence_zero:
                 continue
             keep.append(i)
 
@@ -202,10 +190,7 @@ class _VectorView:
         self.zero_vecs = self.zero_vecs[keep]
         self.scales = self.scales[keep]
         self.biases = self.biases[keep]
-        self.featmap = {
-            phone: [vals[i] for i in keep]
-            for phone, vals in self.featmap.items()
-        }
+        self.featmap = {phone: [vals[i] for i in keep] for phone, vals in self.featmap.items()}
 
     # -- projection ------------------------------------------------------- #
 
@@ -284,10 +269,7 @@ class PhonologicalPosteriogram:
         )
 
         df_sorted = labeled.sort_values(["audio_path", "min"])
-        same_utt = (
-            df_sorted.audio_path.values[:-1]
-            == df_sorted.audio_path.values[1:]
-        )
+        same_utt = df_sorted.audio_path.values[:-1] == df_sorted.audio_path.values[1:]
         prev_feats = np.stack(df_sorted.feat.values[:-1][same_utt])
         curr_feats = np.stack(df_sorted.feat.values[1:][same_utt])
 
@@ -393,7 +375,7 @@ def _add_timit_closure_release_labels(df):
     out["next_timit_phn"] = out.groupby("audio_path").timit_phn.shift(-1)
     out["cr_ipa"] = [
         _timit_closure_release_label(tp, ip, nx)
-        for tp, ip, nx in zip(out.timit_phn, out.ipa, out.next_timit_phn)
+        for tp, ip, nx in zip(out.timit_phn, out.ipa, out.next_timit_phn, strict=True)
     ]
     return out[out.cr_ipa.notna()]
 
@@ -409,9 +391,7 @@ def _prep_timit_closure_release_featmap(vocab, ft):
 
     def panphon_onehot(seg):
         feats = ft.fts(seg).numeric()
-        return [1 if n == 1 else 0 for n in feats] + [
-            1 if n == -1 else 0 for n in feats
-        ]
+        return [1 if n == 1 else 0 for n in feats] + [1 if n == -1 else 0 for n in feats]
 
     featmap = {}
     for v in vocab:
