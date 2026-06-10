@@ -60,7 +60,10 @@ class PhoneModel:
             self.hparams["drop_closure_release"] = False
         self.device = device
         self._encoder: SSLEncoder | None = None
-        self.recognizer = Recognizer(featnames=self.posteriogram.featnames)
+        self.recognizer = Recognizer(
+            featnames=self.posteriogram.featnames,
+            featmap=self.posteriogram.views["ipa"].featmap,
+        )
 
     @property
     def encoder(self) -> SSLEncoder:
@@ -252,9 +255,6 @@ class PhoneModel:
         audio: str | os.PathLike | np.ndarray,
         *,
         sr: int | None = None,
-        lang: str | None = None,
-        phoible_id: int | None = None,
-        phoneme: bool = False,
         vocab: Sequence[str] | None = None,
         dedup: bool = True,
     ) -> list[SegmentationUnit]:
@@ -268,9 +268,9 @@ class PhoneModel:
                 when supplied and different, the waveform is resampled with
                 a warning. Ignored when ``audio`` is a file path.
             vocab: optional explicit phone vocabulary to constrain the
-                recognizer output to (panphon-known phones only).
-            lang / phoible_id / phoneme: optional Phoible-inventory vocab
-                constraint (mutually exclusive with ``vocab``).
+                recognizer output to (panphon-known phones only). If you want
+                a Phoible inventory, build this tuple with
+                :mod:`phonological_posteriogram.phoible`.
             dedup: if True (default), consecutive segments sharing a label are
                 merged into one span. Pass False to keep every segmenter
                 boundary in the output.
@@ -282,12 +282,14 @@ class PhoneModel:
         feats = self.extract_features(waveform)
         boundaries = self.segmenter().segment(feats, waveform)
         posteriogram = self.posteriogram.project(feats, view="ipa", act="sigmoid")
+        # recognize() takes boundaries as times; the segmenter emits frame indices, so
+        # convert with the encoder's frame↔time mapping (an exact round-trip on the
+        # frame grid).
         triples = self.recognizer.recognize(
             posteriogram,
-            boundaries,
-            lang=lang,
-            phoible_id=phoible_id,
-            phoneme=phoneme,
+            self.encoder.frame_to_time(np.asarray(boundaries)),
+            sr=self.net_spec["sr"],
+            frame_shift=self.encoder.stride_size,
             vocab=vocab,
             dedup=dedup,
         )

@@ -59,7 +59,7 @@ from ..evaluation import (
     SegmentationUnit,
 )
 from ..phone_model import PhoneModel
-from ..recognizer import _resolve_lang
+from ..phoible import vocab_for_language
 from .evaluate import _gt_units
 
 LOWER_IS_BETTER = frozenset({"known_per", "known_pfer", "unknown_per", "unknown_pfer"})
@@ -77,7 +77,7 @@ METRIC_CHOICES = (
     "unknown_per",
     "unknown_pfer",
 )
-_NO_CONSTRAINT = dict(lang=None, phoible_id=None, phoneme=False, vocab=None)
+_NO_CONSTRAINT = dict(vocab=None)
 
 
 def _get_args(argv=None):
@@ -201,10 +201,10 @@ def _resolve_known_lang_kwargs(df, audio_paths):
     """Per-utterance recognize() kwargs for the **known-language** run.
 
     The dataset CSV must carry a ``language`` column (ISO 639-3 codes, as
-    written by :mod:`prepare_datasets`). Each utterance's code is mapped
-    to a Phoible InventoryID via :func:`_resolve_lang`. Codes that don't
-    resolve fall back to no constraint (full panphon) for those
-    utterances; a single warning collects them.
+    written by :mod:`prepare_datasets`). Each utterance's code is mapped to
+    a Phoible vocab tuple. Codes that don't resolve fall back to no
+    constraint (full panphon) for those utterances; a single warning
+    collects them.
     """
     if "language" not in df.columns:
         raise ValueError(
@@ -217,8 +217,7 @@ def _resolve_known_lang_kwargs(df, audio_paths):
     unresolved: set = set()
     for p in audio_paths:
         try:
-            pid = _resolve_lang(str(path_to_lang[p]))
-            resolved[p] = dict(lang=None, phoible_id=pid, phoneme=False, vocab=None)
+            resolved[p] = dict(vocab=vocab_for_language(str(path_to_lang[p])))
         except ValueError:
             unresolved.add(str(path_to_lang[p]))
             resolved[p] = dict(_NO_CONSTRAINT)

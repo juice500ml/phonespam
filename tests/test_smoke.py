@@ -55,7 +55,9 @@ def _wire_recognizer(rec, n_feat=3):
     """Hand-populate a Recognizer's attributes for tests (no panphon)."""
     rec.vocab = ["_"] + [f"phone_{i}" for i in range(n_feat - 1)]
     rec.predmat = np.eye(n_feat, dtype=np.float32)
+    rec._output_labels = list(rec.vocab)
     rec._vocab_to_idx = {p: i for i, p in enumerate(rec.vocab)}
+    rec._output_to_idxs = {p: [i] for i, p in enumerate(rec.vocab)}
     rec._mask_cache = {}
     rec.hparams = {}
     return rec
@@ -229,40 +231,11 @@ def test_ssl_encoder_frame_to_time():
         assert int(enc.time_to_frame(np.array([idx * 320 / 16000]))[0]) == idx
 
 
-def test_recognizer_phoneme_without_lang_raises():
-    """phoneme=True (without a language) is a recognize()-time error: the
-    construct-time predmat is language-agnostic now."""
-    rec = _make_recognizer(n_feat=3)
-    posteriogram = np.zeros((4, 3), dtype=np.float32)
-    with pytest.raises(ValueError, match="phoneme=True"):
-        rec.recognize(posteriogram, [], phoneme=True)
-
-
-def test_recognizer_phoneme_with_vocab_raises():
-    """phoneme=True conflicts with an explicit ``vocab=`` list."""
-    rec = _make_recognizer(n_feat=3)
-    posteriogram = np.zeros((4, 3), dtype=np.float32)
-    with pytest.raises(ValueError, match="phoneme=True"):
-        rec.recognize(posteriogram, [], vocab=["p", "t"], phoneme=True)
-
-
-def test_recognizer_rejects_conflicting_vocab_args():
-    """Pass at most one of vocab / lang / phoible_id."""
-    rec = _make_recognizer(n_feat=3)
-    posteriogram = np.zeros((4, 3), dtype=np.float32)
-    with pytest.raises(ValueError, match="at most one"):
-        rec.recognize(posteriogram, [], lang="Korean", phoible_id=1)
-    with pytest.raises(ValueError, match="at most one"):
-        rec.recognize(posteriogram, [], vocab=["p"], lang="Korean")
-    with pytest.raises(ValueError, match="at most one"):
-        rec.recognize(posteriogram, [], vocab=["p"], phoible_id=1)
-
-
-def test_recognizer_resolves_unknown_language():
-    from phonological_posteriogram.recognizer import _resolve_lang
+def test_phoible_resolves_unknown_language():
+    from phonological_posteriogram.phoible import inventory_id_for_language
 
     with pytest.raises(ValueError, match="not found in Phoible"):
-        _resolve_lang("zzz_no_such_language")
+        inventory_id_for_language("zzz_no_such_language")
 
 
 def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
@@ -270,7 +243,7 @@ def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
     is used (with a warning pointing at phoible.org for context)."""
     import pandas as pd
 
-    from phonological_posteriogram.recognizer import _phoible, _resolve_lang
+    from phonological_posteriogram.phoible import _phoible, inventory_id_for_language
 
     df = _phoible()
     inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
@@ -286,7 +259,7 @@ def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
         pytest.skip("no all-dialected multi-inventory language in this snapshot")
     expected = int(df[df["LanguageName"] == name]["InventoryID"].min())
     with pytest.warns(UserWarning, match="https://phoible.org/languages/"):
-        resolved = _resolve_lang(name)
+        resolved = inventory_id_for_language(name)
     assert resolved == expected
 
 
@@ -295,7 +268,7 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
     it is preferred over lower-numbered dialected inventories."""
     import pandas as pd
 
-    from phonological_posteriogram.recognizer import _phoible, _resolve_lang
+    from phonological_posteriogram.phoible import _phoible, inventory_id_for_language
 
     df = _phoible()
     inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
@@ -312,24 +285,98 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
     if name is None:
         pytest.skip("no suitable dialect-free multi-inventory language found")
     with pytest.warns(UserWarning, match="https://phoible.org/languages/"):
-        resolved = _resolve_lang(name)
+        resolved = inventory_id_for_language(name)
     assert resolved == expected
 
 
-def test_recognizer_load_inventory_helpers():
-    """Phoible CSV is packaged and parses correctly; _load_inventory drops
+def test_phoible_vocab_helpers():
+    """Phoible CSV is packaged and parses correctly; vocab_for_inventory drops
     phones panphon doesn't recognize."""
-    from phonological_posteriogram.recognizer import _load_inventory, _phoible
+    from phonological_posteriogram.phoible import _phoible, vocab_for_inventory
 
     df = _phoible()
     # Pick the first inventory and verify allophone parsing.
     inv_id = int(df["InventoryID"].iloc[0])
-    phonemes = _load_inventory(inv_id, phoneme=True)
-    allophones = _load_inventory(inv_id, phoneme=False)
+    phonemes = vocab_for_inventory(inv_id, phoneme=True)
+    allophones = vocab_for_inventory(inv_id, phoneme=False)
     assert len(phonemes) > 0
     assert len(allophones) >= len(phonemes)  # surface forms ⊇ phonemes
     # The cache key is (id, phoneme); a second call returns the same tuple.
-    assert _load_inventory(inv_id, phoneme=True) is phonemes
+    assert vocab_for_inventory(inv_id, phoneme=True) is phonemes
+
+
+def test_recognizer_closure_release_internal_labels_merge_to_base():
+    """Closure/release state channels add internal stop variants whose
+    returned labels are merged back to the ordinary phone."""
+    rec = Recognizer(featnames=["silence+", "cons+", "closure+", "closure-", "release+", "release-"])
+    p_cl = rec.vocab.index("p_cl")
+    p_rl = rec.vocab.index("p_rl")
+    assert rec._output_labels[p_cl] == "p"
+    assert rec._output_labels[p_rl] == "p"
+    # A plain vocab constraint for "p" should keep both internal variants.
+    mask = rec._phones_to_mask(("p",))
+    assert p_cl in mask
+    assert p_rl in mask
+
+
+def test_recognizer_fitted_featmap_labels_can_separate_output_from_features():
+    """Fitted feature-map keys may encode ``output|feature-spec`` labels."""
+    rec = Recognizer(
+        featnames=["silence+", "cons+", "closure+"],
+        featmap={
+            "_": [1, 0, 0],
+            "tcl|t͡ʃ_cl": [0, 1, 1],
+            "ch|t͡ʃ_rl": [0, 1, 0],
+        },
+    )
+    assert rec._output_labels == ["_", "tcl", "ch"]
+    mask = rec._phones_to_mask(("tcl",))
+    assert rec.vocab.index("tcl|t͡ʃ_cl") in mask
+    post = np.asarray([[0, 1, 1]], dtype=np.float32)
+    assert rec.recognize(post, [], sr=16000, dedup=False) == [(0, 1, "tcl")]
+
+
+def test_panphon_featmap_sparse_rows_ignore_omitted_dimensions():
+    from phonological_posteriogram.recognizer import panphon_featmap
+
+    pytest.importorskip("panphon")
+
+    featnames = ["silence+", "cons+", "son+", "closure+"]
+    featmap = panphon_featmap(["p", "m"], featnames)
+    assert set(featmap["p"]) == {"cons+", "son+"}
+    assert "silence+" not in featmap["p"]
+    assert "closure+" not in featmap["p"]
+
+    rec = Recognizer(featnames=featnames, featmap=featmap)
+    # `closure+` strongly favors "p" if included, but sparse scoring ignores it.
+    post = np.asarray([[0.0, 0.25, 1.0, 100.0]], dtype=np.float32)
+    assert rec.recognize(post, [], sr=16000, dedup=False) == [(0, 1, "m")]
+
+
+def test_panphon_featmap_supports_silence_token():
+    from phonological_posteriogram.recognizer import panphon_featmap
+
+    pytest.importorskip("panphon")
+
+    featnames = ["silence+", "cons+", "son+", "closure+"]
+    featmap = panphon_featmap(["p", "_"], featnames)
+
+    assert set(featmap["p"]) == {"silence+", "cons+", "son+"}
+    assert set(featmap["_"]) == {"silence+", "cons+", "son+"}
+    assert featmap["p"]["silence+"] == 0
+    assert featmap["_"]["silence+"] == 1
+    assert featmap["_"]["cons+"] == 0
+    assert featmap["_"]["son+"] == 0
+
+    rec = Recognizer(featnames=featnames, featmap=featmap)
+    assert rec.vocab == ["p", "_"]
+    assert rec._feat_idxs.tolist() == [0, 1, 2]
+
+    assert panphon_featmap(["_"], ["silence+"]) == {"_": {"silence+": 1}}
+
+
+def test_public_api_exposes_panphon_featmap():
+    assert pp.panphon_featmap is not None
 
 
 def test_recognizer_is_pure_posteriogram_plus_boundaries():
@@ -350,7 +397,8 @@ def test_recognizer_is_pure_posteriogram_plus_boundaries():
     posteriogram[15] = [0.1, 0.9, 0.1]  # → "phone_0"
     posteriogram[25] = [0.1, 0.1, 0.9]  # → "phone_1"
 
-    triples = rec.recognize(posteriogram, [10, 20])
+    # Boundaries are times; frames 10 and 20 at 16 kHz / stride 320 are 0.2 s and 0.4 s.
+    triples = rec.recognize(posteriogram, [0.2, 0.4], sr=16000)
     assert triples == [
         (0, 10, "_"),
         (10, 20, "phone_0"),
@@ -362,7 +410,7 @@ def test_recognizer_handles_empty_boundaries():
     """No boundaries → one segment covering the whole feature span."""
     rec = _make_recognizer(n_feat=3)
     posteriogram = np.tile(np.array([0.9, 0.1, 0.1], dtype=np.float32), (8, 1))
-    assert rec.recognize(posteriogram, []) == [(0, 8, "_")]
+    assert rec.recognize(posteriogram, [], sr=16000) == [(0, 8, "_")]
 
 
 def test_recognizer_vocab_constrains_output(monkeypatch):
@@ -378,12 +426,12 @@ def test_recognizer_vocab_constrains_output(monkeypatch):
     # posteriogram aligned to "phone_1".
     posteriogram = np.full((6, 3), 0.1, dtype=np.float32)
     posteriogram[3] = [0.1, 0.1, 0.9]  # → "phone_1" unconstrained
-    assert rec.recognize(posteriogram, []) == [(0, 6, "phone_1")]
+    assert rec.recognize(posteriogram, [], sr=16000) == [(0, 6, "phone_1")]
 
     # With vocab=["phone_0"], "phone_1" is masked out. Silence "_" is
     # always allowed; with the asymmetric scores below, phone_0 wins.
     posteriogram[3] = [0.1, 0.5, 0.9]  # silence=0.1, phone_0=0.5, phone_1=0.9
-    triples = rec.recognize(posteriogram, [], vocab=["phone_0"])
+    triples = rec.recognize(posteriogram, [], sr=16000, vocab=["phone_0"])
     assert triples == [(0, 6, "phone_0")]
 
 
@@ -1067,8 +1115,8 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
     matching one raises ``FileNotFoundError`` (so we can exercise the
     error-handling branch).
 
-    Mirrors the new API: ``recognize(audio, *, sr, lang, phoible_id,
-    phoneme, vocab)`` returns ``List[SegmentationUnit]`` in seconds; the
+    Mirrors the new API: ``recognize(audio, *, sr, vocab)`` returns
+    ``List[SegmentationUnit]`` in seconds; the
     embedded recognizer is an attribute (not a factory) and itself returns
     frame-based triples.
     """
@@ -1099,9 +1147,6 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
             audio,
             *,
             sr=None,
-            lang=None,
-            phoible_id=None,
-            phoneme=False,
             vocab=None,
         ):
             if isinstance(audio, str | Path):
@@ -1112,9 +1157,6 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
             triples = self.recognizer.recognize(
                 posteriogram,
                 np.asarray(internal_boundaries, dtype=int),
-                lang=lang,
-                phoible_id=phoible_id,
-                phoneme=phoneme,
                 vocab=vocab,
             )
             if not triples:
@@ -1405,7 +1447,7 @@ def test_training_tune_runs_encoder_once_and_sweeps(tmp_path, monkeypatch):
 
 
 def test_tune_known_lang_kwargs_resolves_per_utterance(monkeypatch):
-    """Each row's `language` (an ISO 639-3 code) maps to a phoible_id."""
+    """Each row's `language` (an ISO 639-3 code) maps to a Phoible vocab."""
     pd = pytest.importorskip("pandas")
     tune = pytest.importorskip("phonological_posteriogram.training.tune")
 
@@ -1418,22 +1460,21 @@ def test_tune_known_lang_kwargs_resolves_per_utterance(monkeypatch):
             "language": ["xxA", "xxB", "xxC"],
         }
     )
-    fake_resolve = {"xxA": 11, "xxB": 22}  # xxC fails
+    fake_resolve = {"xxA": ("a",), "xxB": ("b",)}  # xxC fails
 
-    def _fake_resolve(lang):
+    def _fake_vocab_for_language(lang):
         if lang in fake_resolve:
             return fake_resolve[lang]
         raise ValueError(f"unknown {lang}")
 
-    monkeypatch.setattr(tune, "_resolve_lang", _fake_resolve)
+    monkeypatch.setattr(tune, "vocab_for_language", _fake_vocab_for_language)
 
     with pytest.warns(UserWarning, match="Could not resolve"):
         out = tune._resolve_known_lang_kwargs(df, ["a.wav", "b.wav", "c.wav"])
-    assert out["a.wav"]["phoible_id"] == 11
-    assert out["b.wav"]["phoible_id"] == 22
+    assert out["a.wav"]["vocab"] == ("a",)
+    assert out["b.wav"]["vocab"] == ("b",)
     # Unresolved language → no constraint for that utterance.
-    assert out["c.wav"]["phoible_id"] is None
-    assert out["c.wav"]["lang"] is None
+    assert out["c.wav"]["vocab"] is None
 
 
 def test_tune_known_lang_kwargs_requires_language_column():

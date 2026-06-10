@@ -1,78 +1,38 @@
 """Per-segment phone recognition with optional vocab constraint.
 
 The recognizer is a pure mapping ``(posteriogram, boundaries) → labels``
-(frame-based). It always carries the **full** panphon phone vocab in its
-predmat; any output-vocab constraint is applied as a mask at the very
-last moment, just before the argmax. This means switching vocabularies
-between calls only requires a tiny masked argmax — the expensive predmat
-build only happens once.
+(one label per segment). By default it carries a full panphon consonant predmat;
+when a fitted feature map is supplied, it classifies over that map instead. Any
+output-vocab constraint is applied as a mask at the very last moment, just before
+the argmax. This means switching vocabularies between calls only requires a tiny
+masked argmax — the expensive predmat build only happens once.
 
-Three (mutually exclusive) ways to constrain the output vocabulary at
-:meth:`Recognizer.recognize` time:
+Constrain the output vocabulary with ``vocab=[...]``. If you want a Phoible
+inventory, resolve it first with :mod:`phonological_posteriogram.phoible` and
+pass the returned tuple as ``vocab``.
 
-- ``vocab=[...]`` — pass a list of phones directly (panphon-known phones only;
-  unknown phones are warned about and dropped).
-- ``lang=...`` / ``phoible_id=...`` — pull a Phoible inventory; ``phoneme=True``
-  selects the abstract ``Phoneme`` set rather than the surface ``Allophones``.
-
-Frame→time conversion is intentionally *not* the recognizer's job — it
-returns ``(start_frame, end_frame, label)`` triples and the caller (typically
-:class:`~phonological_posteriogram.phone_model.PhoneModel`) wraps those into
-seconds-based :class:`~phonological_posteriogram.evaluation.SegmentationUnit`.
+Frame→time conversion is intentionally *not* the recognizer's job. Boundaries
+define the segments; the recognizer returns only labels for those segments.
 """
 
 from __future__ import annotations
 
 import functools
-import os
 import warnings
 from collections.abc import Sequence
 
 import numpy as np
-import pandas as pd
 import panphon
 
-_PHOIBLE_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "phoible.csv")
+_CR_RELEASE_IPA = ("p", "t", "k", "b", "d", "ɡ", "t͡ʃ", "d͡ʒ")
 
 
-@functools.lru_cache(maxsize=1)
-def _phoible():
-    """Lazily load (and cache) the packaged Phoible inventory CSV."""
-    df = pd.read_csv(
-        _PHOIBLE_CSV,
-        keep_default_na=False,
-        na_values=[""],
-        low_memory=False,
-    )
-    df["InventoryID"] = df["InventoryID"].astype(int)
-    return df
-
-
-@functools.cache
-def _load_inventory(phoible_id: int, phoneme: bool = False) -> tuple[str, ...]:
-    """Load one Phoible inventory's phone list, filtered to panphon-known.
-
-    Cached per ``(phoible_id, phoneme)`` so the CSV is read once and the
-    ``ft.seg_known`` filter is applied once. Warns (once) about phones the
-    inventory mentions that panphon doesn't recognize — those are dropped.
-    """
-    df = _phoible()
-    rows = df[df["InventoryID"] == int(phoible_id)]
-    if rows.empty:
-        raise ValueError(f"Phoible InventoryID {phoible_id} not found in the packaged phoible.csv.")
-    # Phoible uses the literal string "NA" as a no-data placeholder in the
-    # Phoneme/Allophones columns (the CSV is read with keep_default_na=False,
-    # so it stays a string rather than NaN). It's not a phone — skip it.
-    if phoneme:
-        phones = sorted(p for p in rows["Phoneme"].dropna().unique() if p != "NA")
-    else:
-        # Allophones is a space-separated list per phoneme entry.
-        phones_set: set = set()
-        for s in rows["Allophones"].dropna():
-            phones_set.update(tok for tok in s.split() if tok != "NA")
-        phones = sorted(phones_set)
-
-    return _filter_panphon_known(tuple(phones), context=f"InventoryID {phoible_id}")
+def _default_output_label(label: str) -> str:
+    if "|" in label:
+        return label.split("|", 1)[0]
+    if label.endswith("_cl") or label.endswith("_rl"):
+        return label[:-3]
+    return label
 
 
 @functools.cache
@@ -125,98 +85,177 @@ def _filter_panphon_known(phones: Sequence[str], *, context: str) -> tuple[str, 
     return tuple(dict.fromkeys(segments))
 
 
-def _inventory_dialect(series):
-    """An inventory's SpecificDialect (it's constant within an InventoryID).
-
-    Returns the first specified (non-NaN) value if there is one; otherwise
-    (the inventory has only NaN rows) returns the first index, which is NaN
-    — never a value borrowed from another inventory.
-    """
-    specified = series.dropna()
-    return specified.iloc[0] if not specified.empty else series.iloc[0]
+@functools.cache
+def _panphon_table():
+    return panphon.FeatureTable()
 
 
 @functools.cache
-def _resolve_lang(lang: str) -> int:
-    """Resolve a language name to a single Phoible InventoryID.
+def _panphon_base_names() -> tuple[str, ...]:
+    return tuple(_panphon_table().fts("a").names)
 
-    Searches LanguageName, then ISO6393, then Glottocode (all
-    case-insensitive). When a language matches multiple inventories, the
-    **dialect-free** inventory (``SpecificDialect`` is NaN) is preferred —
-    it's the most generic representation of the language. If several are
-    dialect-free, the smallest such InventoryID wins; if none is, the
-    smallest InventoryID overall is used. A warning lists every candidate's
-    SpecificDialect; pass ``phoible_id=`` explicitly to override.
-    """
-    df = _phoible()
-    target = str(lang).strip().lower()
-    for col in ("LanguageName", "ISO6393", "Glottocode"):
-        mask = df[col].astype(str).str.lower() == target
-        rows = df[mask]
-        if rows.empty:
-            continue
-        inv_ids = sorted(int(i) for i in rows["InventoryID"].unique())
-        if len(inv_ids) == 1:
-            return inv_ids[0]
 
-        glottocode = rows["Glottocode"].iloc[0]
-        dialect_per_id = {
-            int(rid): _inventory_dialect(rsub["SpecificDialect"])
-            for rid, rsub in rows.groupby("InventoryID")
-        }
-        # Prefer the dialect-free inventory (SpecificDialect is NaN). Among
-        # several dialect-free ones take the smallest InventoryID; if none
-        # is dialect-free, fall back to the smallest InventoryID overall.
-        dialect_free = [i for i in inv_ids if pd.isna(dialect_per_id[i])]
-        chosen = dialect_free[0] if dialect_free else inv_ids[0]
-        id_dialect_lines = ", ".join(f"{i}: {dialect_per_id[i]!r}" for i in inv_ids)
-        warnings.warn(
-            f"Phoible has {len(inv_ids)} inventories for {lang!r} "
-            f"({id_dialect_lines}); picking {chosen} "
-            f"(dialect {dialect_per_id[chosen]!r}). Pass `phoible_id=...` "
-            f"to override. See https://phoible.org/languages/{glottocode}",
-            stacklevel=3,
-        )
-        return chosen
-    raise ValueError(
-        f"Language {lang!r} not found in Phoible (LanguageName / ISO6393 / Glottocode)."
+@functools.cache
+def _panphon_numeric(phone: str) -> tuple[int, ...]:
+    ft = _panphon_table()
+    if not ft.seg_known(phone):
+        raise ValueError(f"panphon does not know phone {phone!r}.")
+    return tuple(ft.fts(phone).numeric())
+
+
+@functools.cache
+def _active_panphon_featnames(featnames: tuple[str, ...]) -> tuple[str, ...]:
+    active = tuple(
+        f"{name}{sign}"
+        for name in _panphon_base_names()
+        for sign in ("+", "-")
+        if f"{name}{sign}" in featnames
     )
+    if not active:
+        raise ValueError("featnames has no panphon +/- dimensions.")
+    return active
+
+
+def panphon_featmap(
+    phones: Sequence[str],
+    featnames: Sequence[str],
+) -> dict[str, dict[str, int]]:
+    """Build a sparse panphon +/- feature map for ``Recognizer``.
+
+    The returned rows contain only panphon ``feature+`` / ``feature-`` names
+    that are present in ``featnames``. If ``"_"`` is included in ``phones``,
+    it is treated as the silence token: ``silence+`` is added to every row,
+    non-silence phones receive ``0``, and ``"_"`` receives ``1`` with all
+    panphon dimensions set to ``0``. Other recognizer dimensions, such as
+    closure/release state channels, are intentionally omitted and therefore
+    ignored by sparse feature-map scoring.
+    """
+    base_names = _panphon_base_names()
+    phones = tuple(phones)
+    if not phones:
+        raise ValueError("phones is empty.")
+    featnames = tuple(featnames)
+    includes_silence = "_" in phones
+    non_silence_phones = tuple(phone for phone in phones if phone != "_")
+    if non_silence_phones:
+        active = _active_panphon_featnames(featnames)
+    else:
+        active = ()
+    if includes_silence:
+        if "silence+" not in featnames:
+            raise ValueError('phones includes "_" but featnames has no "silence+".')
+        active = ("silence+",) + active
+
+    featmap = {}
+    for phone in phones:
+        if phone == "_":
+            featmap[phone] = {name: 0 for name in active}
+            featmap[phone]["silence+"] = 1
+            continue
+        values = dict(zip(base_names, _panphon_numeric(phone)))
+        row = {
+            name: int(
+                (name.endswith("+") and values[name[:-1]] == 1)
+                or (name.endswith("-") and values[name[:-1]] == -1)
+            )
+            for name in active
+            if name != "silence+"
+        }
+        if includes_silence:
+            row["silence+"] = 0
+        featmap[phone] = row
+    return featmap
 
 
 class Recognizer:
-    """Pure mapping ``(posteriogram, boundaries) → frame-based triples``.
+    """Pure mapping ``(posteriogram, boundaries) → labels``.
 
-    Always carries the full panphon predmat; vocab constraints mask the
-    argmax per :meth:`recognize` call. Construct with the posteriogram's
-    ``featnames`` only — frame↔time conversion is the caller's job.
+    Carries either the full panphon predmat or a caller-supplied fitted feature
+    map; vocab constraints mask the argmax per :meth:`recognize` call.
+    Construct with the posteriogram's ``featnames`` only — frame↔time
+    conversion is the caller's job.
     """
 
     @classmethod
     def default_hparams(cls):
         return {}
 
-    def __init__(self, *, featnames, hparams=None):
-        self.vocab, self.predmat = self._build_predmat(featnames)
+    def __init__(self, *, featnames, hparams=None, featmap=None):
+        self._uses_fitted_featmap = featmap is not None
+        self._featnames = list(featnames)
+        self.vocab, self.predmat, self._feat_idxs = self._build_predmat(
+            self._featnames, featmap=featmap
+        )
+        self._output_labels = [_default_output_label(label) for label in self.vocab]
         self._vocab_to_idx = {p: i for i, p in enumerate(self.vocab)}
+        self._output_to_idxs = {}
+        for i, label in enumerate(self._output_labels):
+            self._output_to_idxs.setdefault(label, []).append(i)
         self._mask_cache: dict = {}
         self.hparams = {**self.default_hparams(), **(hparams or {})}
 
     @staticmethod
-    def _build_predmat(featnames) -> tuple[list[str], np.ndarray]:
-        """Build the full-panphon predmat aligned to ``featnames``.
+    def _build_predmat(featnames, *, featmap=None) -> tuple[list[str], np.ndarray, np.ndarray]:
+        """Build prototypes aligned to ``featnames``.
 
-        Always uses every panphon-known phone with ``cons != 0``; the
-        per-call vocab restriction is applied via :meth:`_phones_to_mask`,
-        not by re-building the predmat.
+        With no fitted ``featmap``, this uses every panphon-known phone with
+        ``cons != 0``; the per-call vocab restriction is applied via
+        :meth:`_phones_to_mask`, not by re-building the predmat.
+
+        Caller-supplied fitted feature maps may be dense rows aligned to every
+        ``featname`` (the format used by fitted posteriograms), or sparse
+        dictionaries mapping only the dimensions to score. Sparse maps let
+        callers exclude inert dimensions such as closure/release state
+        channels.
+
+        If the posteriogram was trained with TIMIT raw closure/release state
+        channels, the classifier adds closure/release variants for stops and
+        affricates. Those variants are internal prototypes; returned labels
+        are merged back to their base phone, matching the notebook oracle.
         """
+        if featmap is not None:
+            vocab = list(featmap)
+            first = featmap[vocab[0]]
+            if isinstance(first, dict):
+                provided = set(first)
+                assert provided, "sparse featmap rows must provide at least one feature"
+                for label in vocab[1:]:
+                    assert set(featmap[label]) == provided, (
+                        "sparse featmap rows must all provide the same feature names",
+                        label,
+                    )
+                featname_to_idx = {name: i for i, name in enumerate(featnames)}
+                unknown = sorted(provided - set(featname_to_idx))
+                assert not unknown, (
+                    "sparse featmap provides features absent from featnames",
+                    unknown,
+                )
+                feat_idxs = np.asarray(
+                    [featname_to_idx[name] for name in featnames if name in provided],
+                    dtype=np.int64,
+                )
+                active_names = [featnames[i] for i in feat_idxs]
+                predmat = np.asarray(
+                    [[featmap[label][name] for name in active_names] for label in vocab],
+                    dtype=np.float32,
+                )
+            else:
+                predmat = np.asarray([featmap[label] for label in vocab], dtype=np.float32)
+                feat_idxs = np.arange(len(featnames), dtype=np.int64)
+            assert predmat.ndim == 2
+            assert predmat.shape[1] == len(feat_idxs)
+            sums = predmat.sum(1, keepdims=True)
+            sums = np.where(sums > 0, sums, 1.0)
+            return vocab, predmat / sums, feat_idxs
+
         ft = panphon.FeatureTable()
         panphon_names = ft.fts("a").names
         full_featnames = (
             ["silence+"] + [f"{n}+" for n in panphon_names] + [f"{n}-" for n in panphon_names]
+            + ["closure+", "closure-", "release+", "release-"]
         )
         name_to_full_idx = {n: i for i, n in enumerate(full_featnames)}
-        state_names = {"closure+", "closure-", "release+", "release-"}
-        missing = [n for n in featnames if n not in name_to_full_idx and n not in state_names]
+        missing = [n for n in featnames if n not in name_to_full_idx]
         if missing:
             raise ValueError(
                 "Featnames not derivable from panphon's feature table: "
@@ -224,26 +263,39 @@ class Recognizer:
             )
 
         vocab = ["_"]
-        rows = [[1] + [0] * (len(panphon_names) * 2)]
+        rows = [[1] + [0] * (len(panphon_names) * 2) + [0, 0, 0, 0]]
+
+        def phone_row(phone, state):
+            feats = ft.fts(phone).numeric()
+            return (
+                [0]
+                + [1 if n == 1 else 0 for n in feats]
+                + [1 if n == -1 else 0 for n in feats]
+                + state
+            )
+
         for k, v in ft.seg_dict.items():
             if v["cons"] != 0:
                 vocab.append(k)
-                feats = v.numeric()
-                rows.append(
-                    [0] + [1 if n == 1 else 0 for n in feats] + [1 if n == -1 else 0 for n in feats]
-                )
+                rows.append(phone_row(k, [0, 0, 0, 0]))
+
+        if any(n in featnames for n in ("closure+", "closure-", "release+", "release-")):
+            for phone in _CR_RELEASE_IPA:
+                assert ft.seg_known(phone), f"panphon does not know closure/release phone {phone!r}"
+                vocab.append(phone + "_cl")
+                rows.append(phone_row(phone, [1, 0, 0, 1]))
+                vocab.append(phone + "_rl")
+                rows.append(phone_row(phone, [0, 1, 1, 0]))
+
         full_predmat = np.asarray(rows, dtype=np.float32)
 
         predmat_cols = []
         for name in featnames:
-            if name in name_to_full_idx:
-                predmat_cols.append(full_predmat[:, name_to_full_idx[name]])
-            else:
-                predmat_cols.append(np.zeros(len(full_predmat), dtype=np.float32))
+            predmat_cols.append(full_predmat[:, name_to_full_idx[name]])
         predmat = np.stack(predmat_cols, axis=1)
         sums = predmat.sum(1, keepdims=True)
         sums = np.where(sums > 0, sums, 1.0)
-        return vocab, predmat / sums
+        return vocab, predmat / sums, np.arange(len(featnames), dtype=np.int64)
 
     def _phones_to_mask(self, phones: tuple[str, ...]) -> np.ndarray:
         """Vocab indices for the given phones; cached per phones-tuple.
@@ -254,100 +306,76 @@ class Recognizer:
         cached = self._mask_cache.get(phones)
         if cached is not None:
             return cached
+        output_to_idxs = getattr(self, "_output_to_idxs", {})
         idxs = {self._vocab_to_idx[p] for p in phones if p in self._vocab_to_idx}
+        for phone in phones:
+            idxs.update(output_to_idxs.get(phone, ()))
         if "_" in self._vocab_to_idx:
             idxs.add(self._vocab_to_idx["_"])
         mask = np.array(sorted(idxs), dtype=np.int64)
         self._mask_cache[phones] = mask
         return mask
 
-    def _resolve_vocab(
-        self,
-        *,
-        lang: str | None,
-        phoible_id: int | None,
-        phoneme: bool,
-        vocab: Sequence[str] | None,
-    ) -> tuple[str, ...] | None:
-        """Pick the constrained phone set from one of the vocab args.
-
-        Returns ``None`` for "no constraint" (full panphon vocab). Raises
-        on conflicting / inconsistent argument combinations.
-        """
-        sources = sum(1 for x in (lang, phoible_id, vocab) if x is not None)
-        if sources > 1:
-            raise ValueError("Pass at most one of `vocab=`, `lang=`, or `phoible_id=`.")
-        if phoneme and vocab is not None:
-            raise ValueError(
-                "phoneme=True is only meaningful with a Phoible language "
-                "constraint (`lang=` / `phoible_id=`), not with an explicit "
-                "`vocab=` list."
-            )
-        if vocab is not None:
-            return _validate_vocab(tuple(vocab))
-        if lang is not None or phoible_id is not None:
-            if phoible_id is None:
-                phoible_id = _resolve_lang(lang)
-            return _load_inventory(phoible_id, phoneme=phoneme)
-        # No constraint, but phoneme=True without lang/phoible_id is still
-        # a user mistake (it has no effect).
-        if phoneme:
-            raise ValueError(
-                "phoneme=True requires a language constraint "
-                "(`lang=...` or `phoible_id=...`). With no language "
-                "this is a phone recognizer over the full panphon "
-                "vocab, not a phoneme recognizer."
-            )
-        return None
-
     def recognize(
         self,
         posteriogram,
         boundaries,
         *,
-        lang: str | None = None,
-        phoible_id: int | None = None,
-        phoneme: bool = False,
+        sr: int,
+        frame_shift: int = 320,
         vocab: Sequence[str] | None = None,
-        dedup: bool = True,
-    ) -> list[tuple[int, int, str]]:
+    ) -> list[str]:
         """Label each segment defined by ``boundaries`` via center pooling.
 
         Args:
             posteriogram: ``(T, n_featnames)`` per-frame sigmoid posteriogram.
-            boundaries: 1D array of segmentation boundary frame indices.
+            boundaries: 1D array of inter-segment boundary *times in seconds*.
+                Feature frames are hop-aligned, so each segment is pooled at the
+                frame containing its midpoint time,
+                ``floor(t_mid * sr / frame_shift)`` — the exact center
+                convention used at feature-extraction time
+                (:mod:`training.extract_features`), which avoids the frame
+                drift of pooling at the midpoint of independently-floored
+                boundary frames.
+            sr: sample rate the posteriogram frames were produced at.
+            frame_shift: SSL encoder stride in input samples (320 for the
+                wav2vec2 family) — one frame spans ``frame_shift / sr`` seconds.
             vocab: optional list of phones to constrain the output to. Phones
-                panphon doesn't recognize are warned about and dropped.
-            lang / phoible_id / phoneme: optional Phoible-inventory vocab
-                constraint (mutually exclusive with ``vocab``). ``phoneme=True``
-                requires one of ``lang`` / ``phoible_id``.
-            dedup: if True (default), merge consecutive segments that share a
-                label into one span (the same phone can't sit side by side, so
-                a boundary between same-labeled segments is spurious). Pass
-                False to keep every segmenter boundary in the output.
+                panphon doesn't recognize are warned about and dropped. For a
+                Phoible inventory, use :mod:`phonological_posteriogram.phoible`
+                to create this tuple.
 
-        Returns ``list[(start_frame, end_frame, label)]`` (frame-based; the
-        caller handles frame→time conversion).
+        Returns one label per segment defined by ``boundaries``.
         """
-        phones = self._resolve_vocab(lang=lang, phoible_id=phoible_id, phoneme=phoneme, vocab=vocab)
+        if vocab is None:
+            phones = None
+        elif self._uses_fitted_featmap:
+            phones = tuple(vocab)
+        else:
+            phones = _validate_vocab(tuple(vocab))
 
         T = len(posteriogram)
         if T == 0:
             return []
 
-        bs = np.unique(
-            np.concatenate(
-                [
-                    np.asarray([0]),
-                    np.asarray(boundaries, dtype=int),
-                    np.asarray([T]),
-                ]
-            )
+        # Boundaries are inter-segment times (seconds). Bracket with [0,
+        # frame_to_time(T)] and pool each segment at the frame holding its
+        # midpoint time: floor(t_mid * sr / frame_shift). Sorting and clipping
+        # keeps segment centers inside the utterance span while preserving one
+        # output label per input-defined segment.
+        end_t = T * frame_shift / sr
+        bt = np.clip(
+            np.sort(np.concatenate([[0.0], np.asarray(boundaries, dtype=float), [end_t]])),
+            0.0,
+            end_t,
         )
-        bs = bs[(bs >= 0) & (bs <= T)]
-
-        centers = np.clip((bs[:-1] + bs[1:]) // 2, 0, T - 1)
-        center_post = np.asarray(posteriogram)[centers]
+        centers = np.clip(
+            np.floor((bt[:-1] + bt[1:]) / 2 * sr / frame_shift).astype(int), 0, T - 1
+        )
+        posteriogram = np.asarray(posteriogram)
+        assert posteriogram.ndim == 2
+        assert posteriogram.shape[1] == len(self._featnames)
+        center_post = posteriogram[centers][:, self._feat_idxs]
         logits = center_post @ self.predmat.T
 
         if phones is None:
@@ -357,18 +385,5 @@ class Recognizer:
             masked = logits[:, mask]
             idxs = mask[masked.argmax(axis=1)]
 
-        triples = [
-            (int(bs[i]), int(bs[i + 1]), self.vocab[int(idxs[i])]) for i in range(len(centers))
-        ]
-        if not dedup:
-            return triples
-        # Merge consecutive segments that share a label: the same phone can't
-        # sit side by side, so a boundary between same-labeled segments is
-        # spurious — collapse them into one span (start of first, end of last).
-        merged: list[tuple[int, int, str]] = []
-        for s, e, lab in triples:
-            if merged and merged[-1][2] == lab:
-                merged[-1] = (merged[-1][0], e, lab)
-            else:
-                merged.append((s, e, lab))
-        return merged
+        output_labels = getattr(self, "_output_labels", self.vocab)
+        return [output_labels[int(idx)] for idx in idxs]

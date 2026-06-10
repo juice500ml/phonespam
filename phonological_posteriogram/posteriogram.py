@@ -39,6 +39,12 @@ def _fill_gaps(raw_mask):
     return np.logical_or(raw_mask, neighbors_silent)
 
 
+def _feature_label_sort_key(label):
+    if label == "_":
+        return label
+    return label.split("|", 1)[1] if "|" in label else label
+
+
 ACTIVATIONS = ("none", "sigmoid")
 
 
@@ -289,7 +295,7 @@ class PhonologicalPosteriogram:
         preserving the ordinary IPA feature geometry.
         """
         df = _add_timit_closure_release_labels(train_df)
-        vocab = sorted(df.cr_ipa.unique())
+        vocab = sorted(df.cr_ipa.unique(), key=_feature_label_sort_key)
         return cls.fit(
             df,
             filter_features=filter_features,
@@ -373,11 +379,15 @@ def _add_timit_closure_release_labels(df):
         )
     out = df.sort_values(["audio_path", "min"]).copy()
     out["next_timit_phn"] = out.groupby("audio_path").timit_phn.shift(-1)
+    # cr_ipa is the IPA prototype label (closure/release suffixed): the
+    # recognizer collapses ``_cl``/``_rl`` back to the base IPA phone on output,
+    # so the model speaks IPA uniformly across datasets. (Provenance back to the
+    # native TIMIT token is intentionally not encoded in the label.)
     out["cr_ipa"] = [
         _timit_closure_release_label(tp, ip, nx)
         for tp, ip, nx in zip(out.timit_phn, out.ipa, out.next_timit_phn, strict=True)
     ]
-    return out[out.cr_ipa.notna()]
+    return out[out.cr_ipa.notna()].copy()
 
 
 def _prep_timit_closure_release_featmap(vocab, ft):
@@ -397,15 +407,17 @@ def _prep_timit_closure_release_featmap(vocab, ft):
     for v in vocab:
         if v == "_":
             featmap[v] = [1] + [0] * (len(base) * 2) + [0, 0, 0, 0]
-        elif v.endswith("_cl"):
-            assert ft.seg_known(v[:-3]), f"unknown closure base: {v[:-3]!r}"
-            featmap[v] = [0] + panphon_onehot(v[:-3]) + [1, 0, 0, 1]
-        elif v.endswith("_rl"):
-            assert ft.seg_known(v[:-3]), f"unknown release base: {v[:-3]!r}"
-            featmap[v] = [0] + panphon_onehot(v[:-3]) + [0, 1, 1, 0]
-        elif ft.seg_known(v):
-            featmap[v] = [0] + panphon_onehot(v) + [0, 0, 0, 0]
-        elif v in _CR_DIPHTHONGS:
+            continue
+        spec = v.split("|", 1)[1] if "|" in v else v
+        if spec.endswith("_cl"):
+            assert ft.seg_known(spec[:-3]), f"unknown closure base: {spec[:-3]!r}"
+            featmap[v] = [0] + panphon_onehot(spec[:-3]) + [1, 0, 0, 1]
+        elif spec.endswith("_rl"):
+            assert ft.seg_known(spec[:-3]), f"unknown release base: {spec[:-3]!r}"
+            featmap[v] = [0] + panphon_onehot(spec[:-3]) + [0, 1, 1, 0]
+        elif ft.seg_known(spec):
+            featmap[v] = [0] + panphon_onehot(spec) + [0, 0, 0, 0]
+        elif spec in _CR_DIPHTHONGS:
             continue
         else:
             raise ValueError(f"unexpected panphon-unknown label: {v!r}")

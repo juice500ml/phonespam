@@ -47,6 +47,7 @@ dependencies = [
     "huggingface-hub>=0.19",
     "librosa>=0.10",
     "panphon>=0.20",
+    "pyarrow>=24.0.0",
 ]
 
 [project.optional-dependencies]

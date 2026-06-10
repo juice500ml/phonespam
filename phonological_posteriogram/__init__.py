@@ -7,7 +7,7 @@ from .evaluation import (
 )
 from .phone_model import PhoneModel
 from .posteriogram import PhonologicalPosteriogram
-from .recognizer import Recognizer
+from .recognizer import Recognizer, panphon_featmap
 from .segmenter import Segmenter
 
 try:
@@ -23,5 +23,6 @@ __all__ = [
     "SegmentationEvaluator",
     "SegmentationUnit",
     "Segmenter",
+    "panphon_featmap",
     "__version__",
 ]

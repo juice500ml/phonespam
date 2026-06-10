@@ -8,9 +8,8 @@ in the CSV and reports both:
 * Phone recognition (PER / PFER) via :class:`PhoneRecognitionEvaluator`.
 
 By default the recognizer outputs the full panphon phone vocab; pass
-``--vocab`` (an explicit comma-separated phone list) **or** ``--lang`` /
-``--phoible_id`` (with optional ``--phoneme``) to constrain the output
-vocabulary.
+``--vocab`` to constrain the output vocabulary. If the vocab should come
+from Phoible, resolve it with :mod:`phonological_posteriogram.phoible`.
 
 Run as::
 
@@ -97,29 +96,7 @@ def _get_args(argv=None):
         default=None,
         help=(
             "Comma-separated list of phones to constrain the recognizer's "
-            "output vocabulary. Mutually exclusive with --lang/--phoible_id."
-        ),
-    )
-    parser.add_argument(
-        "--lang",
-        default=None,
-        help=(
-            "Constrain the recognizer's vocab to one Phoible language "
-            "(LanguageName / ISO 639-3 / Glottocode)."
-        ),
-    )
-    parser.add_argument(
-        "--phoible_id",
-        type=int,
-        default=None,
-        help="Constrain the recognizer's vocab to one Phoible InventoryID.",
-    )
-    parser.add_argument(
-        "--phoneme",
-        action="store_true",
-        help=(
-            "When --lang/--phoible_id is set, use the inventory's abstract "
-            "Phoneme set rather than the surface Allophones."
+            "output vocabulary."
         ),
     )
     parser.add_argument("--device", default="cpu", help="Torch device (cpu, cuda:0, ...).")
@@ -171,13 +148,7 @@ def run(args):
     symbols_dict = {} if args.forced else None
 
     for audio_path in tqdm(audio_paths, desc="Evaluating"):
-        units = model.recognize(
-            audio_path,
-            lang=args.lang,
-            phoible_id=args.phoible_id,
-            phoneme=args.phoneme,
-            vocab=vocab,
-        )
+        units = model.recognize(audio_path, vocab=vocab)
 
         gt = _gt_units(df[df.audio_path == audio_path])
         ground_truth[audio_path] = gt
