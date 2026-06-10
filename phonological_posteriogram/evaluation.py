@@ -637,7 +637,7 @@ class PhoneRecognitionEvaluator:
     def _filter(self, labels):
         if not self.skip_labels:
             return labels
-        return [l for l in labels if l not in self.skip_labels]
+        return [lab for lab in labels if lab not in self.skip_labels]
 
     def per(self, predicted, reference) -> float:
         """Phone Error Rate for one utterance."""

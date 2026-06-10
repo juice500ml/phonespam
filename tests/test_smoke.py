@@ -1245,7 +1245,7 @@ def _make_fake_eval_model(internal_boundaries, n_frames=30, bad_paths=()):
             self, audio, *, sr=None, lang=None, phoible_id=None,
             phoneme=False, vocab=None,
         ):
-            if isinstance(audio, (str, Path)):
+            if isinstance(audio, str | Path):
                 waveform = self.load_audio(audio)
             else:
                 waveform = np.asarray(audio, dtype=np.float32)

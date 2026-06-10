@@ -226,7 +226,7 @@ class PhoneModel:
         """Normalize ``audio`` (path-or-array) to a mono float32 waveform
         at the model's sample rate, resampling (with a warning) if needed.
         """
-        if isinstance(audio, (str, os.PathLike)):
+        if isinstance(audio, str | os.PathLike):
             if sr is not None:
                 warnings.warn(
                     "`sr=` is ignored when `audio` is a file path; the file "
