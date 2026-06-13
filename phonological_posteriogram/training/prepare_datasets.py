@@ -28,7 +28,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-
 from phone_metrics import load_timit, load_voxangeles
 
 # The two TIMIT closure-handling variants emitted side by side.

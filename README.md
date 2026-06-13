@@ -41,12 +41,6 @@ post = model.posteriogram(y)
 The encoder is lazy-loaded on first call, so `from_pretrained` is cheap if
 you just want to inspect or save the artifact.
 
-### CLI
-
-```bash
-phonological-posteriogram utt.wav --model user/phonpost-wavlm-large
-```
-
 ## Versioning
 
 Git tags are the single source of truth. Builds get their version via

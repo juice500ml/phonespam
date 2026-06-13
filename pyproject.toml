@@ -63,9 +63,6 @@ dev = [
     "python-semantic-release[build]",
 ]
 
-[project.scripts]
-phonological-posteriogram = "phonological_posteriogram.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/juice500ml/phonological-posteriogram"
 Repository = "https://github.com/juice500ml/phonological-posteriogram"

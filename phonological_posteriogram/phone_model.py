@@ -3,11 +3,12 @@
 A :class:`PhoneModel` bundles an SSL speech encoder with a fitted
 :class:`~phonological_posteriogram.posteriogram.PhonologicalPosteriogram`
 (the trained weights), a default set of algorithm hyperparameters, and an
-embedded :class:`~phonological_posteriogram.recognizer.Recognizer`. The
-public end-to-end entry point is :meth:`PhoneModel.recognize`; for hparam
-sweeps, :meth:`segmenter` exposes a cheap factory that builds a fresh
-:class:`~phonological_posteriogram.segmenter.Segmenter` over the shared
-posteriogram.
+embedded :class:`~phonological_posteriogram.recognizer.Recognizer`. Load a
+model with :meth:`from_pretrained`, then drive the pieces directly:
+:meth:`load_audio` / :meth:`extract_features`, the shared
+:attr:`posteriogram`, and :meth:`segmenter` (a cheap factory that builds a
+fresh :class:`~phonological_posteriogram.segmenter.Segmenter` over the shared
+posteriogram, e.g. for hparam sweeps).
 
 A saved model is a single artifact file (``torch.save``'d dict)::
 
@@ -21,15 +22,12 @@ A saved model is a single artifact file (``torch.save``'d dict)::
 from __future__ import annotations
 
 import os
-import warnings
-from collections.abc import Sequence
 from pathlib import Path
 
 import librosa
 import numpy as np
 import torch
 
-from .evaluation import SegmentationUnit
 from .features import SSLEncoder
 from .posteriogram import PhonologicalPosteriogram
 from .recognizer import Recognizer
@@ -211,99 +209,9 @@ class PhoneModel:
         y, _ = librosa.load(str(path), sr=self.net_spec["sr"], mono=True)
         return y.astype(np.float32)
 
-    def _coerce_waveform(
-        self,
-        audio: str | os.PathLike | np.ndarray,
-        sr: int | None,
-    ) -> np.ndarray:
-        """Normalize ``audio`` (path-or-array) to a mono float32 waveform
-        at the model's sample rate, resampling (with a warning) if needed.
-        """
-        if isinstance(audio, str | os.PathLike):
-            if sr is not None:
-                warnings.warn(
-                    "`sr=` is ignored when `audio` is a file path; the file "
-                    "is always resampled to the model's expected sample rate.",
-                    stacklevel=3,
-                )
-            return self.load_audio(audio)
-
-        waveform = np.asarray(audio, dtype=np.float32)
-        target_sr = self.net_spec["sr"]
-        if sr is not None and int(sr) != int(target_sr):
-            warnings.warn(
-                f"Input sample rate ({sr} Hz) does not match the model's "
-                f"expected rate ({target_sr} Hz); resampling.",
-                stacklevel=3,
-            )
-            waveform = librosa.resample(waveform, orig_sr=int(sr), target_sr=int(target_sr)).astype(
-                np.float32
-            )
-        return waveform
-
     def extract_features(self, waveform: np.ndarray) -> np.ndarray:
         """Run the SSL encoder and return per-frame features."""
         return self.encoder(np.asarray(waveform, dtype=np.float32))
-
-    def compute_posteriogram(self, waveform: np.ndarray) -> np.ndarray:
-        """Per-frame phonological posteriogram for a single mono waveform."""
-        feats = self.extract_features(waveform)
-        return self.posteriogram.project(feats, view="ipa", act="sigmoid")
-
-    def recognize(
-        self,
-        audio: str | os.PathLike | np.ndarray,
-        *,
-        sr: int | None = None,
-        vocab: Sequence[str] | None = None,
-        dedup: bool = True,
-    ) -> list[SegmentationUnit]:
-        """End-to-end: load → encode → segment → per-segment recognize.
-
-        Args:
-            audio: either a path to an audio file (any librosa-readable
-                format) or a 1D mono waveform array.
-            sr: sample rate of ``audio`` if it is an array. When omitted the
-                array is assumed to already be at the model's expected sr;
-                when supplied and different, the waveform is resampled with
-                a warning. Ignored when ``audio`` is a file path.
-            vocab: optional explicit phone vocabulary to constrain the
-                recognizer output to (panphon-known phones only). If you want
-                a Phoible inventory, build this tuple with
-                :mod:`phonological_posteriogram.phoible`.
-            dedup: if True (default), consecutive segments sharing a label are
-                merged into one span. Pass False to keep every segmenter
-                boundary in the output.
-
-        Returns a list of :class:`SegmentationUnit` with start/end in
-        seconds (via :meth:`SSLEncoder.frame_to_time`).
-        """
-        waveform = self._coerce_waveform(audio, sr)
-        feats = self.extract_features(waveform)
-        boundaries = self.segmenter().segment(feats, waveform)
-        posteriogram = self.posteriogram.project(feats, view="ipa", act="sigmoid")
-        # recognize() takes boundaries as times; the segmenter emits frame indices, so
-        # convert with the encoder's frame↔time mapping (an exact round-trip on the
-        # frame grid).
-        triples = self.recognizer.recognize(
-            posteriogram,
-            self.encoder.frame_to_time(np.asarray(boundaries)),
-            sr=self.net_spec["sr"],
-            frame_shift=self.encoder.stride_size,
-            vocab=vocab,
-            dedup=dedup,
-        )
-        if not triples:
-            return []
-        starts = self.encoder.frame_to_time(np.array([t[0] for t in triples]))
-        ends = self.encoder.frame_to_time(np.array([t[1] for t in triples]))
-        units = [
-            SegmentationUnit(float(starts[i]), float(ends[i]), triples[i][2])
-            for i in range(len(triples))
-        ]
-        units[0].start = 0.0
-        units[-1].end = len(waveform) / self.net_spec["sr"]
-        return units
 
 
 def _resolve_artifact_path(

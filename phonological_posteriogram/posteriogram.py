@@ -288,7 +288,7 @@ class PhonologicalPosteriogram:
 
     @classmethod
     def fit_timit_closure_release(cls, train_df, *, filter_features=True):
-        """Fit the notebook's TIMIT closure/release feature scheme.
+        """Fit the TIMIT closure/release feature scheme.
 
         Raw TIMIT intervals retain stop closures that merged evaluation labels
         drop. The fitted labels distinguish closure/release state while

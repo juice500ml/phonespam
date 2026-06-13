@@ -1,27 +1,24 @@
-"""Reproduce the notebook's phone-classification metrics from a library artifact.
+"""Evaluate phone-classification metrics from a library artifact.
 
 Loads a :class:`~phonological_posteriogram.phone_model.PhoneModel` (trained by
-``training/train.py``), hardcodes the notebook's best segmentation config, and
-reports the same numbers as the marimo notebook for both datasets: the best
-config's boundary R-value (cell 48) and the **oracle** + **full-pipeline**
-phone-recognition metrics (cells 51/52).
+``training/train.py``), hardcodes the best segmentation config, and reports,
+for both datasets, the best config's boundary R-value and the **oracle** +
+**full-pipeline** phone-recognition metrics.
 
-Scoring uses the external ``phone_metrics`` package (exactly what the notebook
-uses) — NOT ``phonological_posteriogram.evaluation``. GT segmentation/labels
-come from ``phone_metrics`` loaders, so labels are canonicalized the same way.
+Scoring uses the external ``phone_metrics`` package. GT segmentation/labels
+come from ``phone_metrics`` loaders, so labels are canonicalized consistently.
 
 Run::
 
-    uv run python scripts/reproduce_phone_classification.py \\
+    uv run python scripts/evaluate_metrics.py \\
         --model trained/model.pt \\
         --timit_root data/TIMIT --vox_root data/voxangeles
 
 Notes
 -----
 Both the oracle and pipeline paths recognize on the **sigmoid** posteriogram
-(``project(act="sigmoid")``), matching the notebook. The segmentation signals
-themselves still use the raw projection internally (inside the library
-``Segmenter``), exactly as in the notebook.
+(``project(act="sigmoid")``). The segmentation signals themselves still use the
+raw projection internally (inside the library ``Segmenter``).
 """
 
 from __future__ import annotations
@@ -31,8 +28,6 @@ from pathlib import Path
 
 import numpy as np
 import panphon
-from tqdm import tqdm
-
 from phone_metrics import (
     PrecisionRecallMetric,
     load_timit,
@@ -40,11 +35,13 @@ from phone_metrics import (
     oracle_phone_accuracy,
     phone_error_rates,
 )
+from tqdm import tqdm
+
 from phonological_posteriogram.phone_model import PhoneModel
 from phonological_posteriogram.recognizer import Recognizer, panphon_featmap
 
-# The notebook's best segmentation configuration (grid.json[0], also the
-# library Segmenter's DEFAULT_COMBINED_SIGNALS). Hardcoded so the script is
+# The best segmentation configuration (grid.json[0], also the library
+# Segmenter's DEFAULT_COMBINED_SIGNALS). Hardcoded so the script is
 # self-contained and independent of the artifact's stored hparams.
 BEST_COMBINED_SIGNALS = [
     {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2},
@@ -58,8 +55,8 @@ BEST_COMBINED_SIGNALS = [
 
 
 def _print_segmentation(name, seg_raw, seg_snap):
-    """Cell 48 `final_evaluate("best", ...)`: boundary R-value (raw + snapped),
-    with precision/recall reported from the raw (non-snapped) boundaries."""
+    """Best-config boundary R-value (raw + snapped), with precision/recall
+    reported from the raw (non-snapped) boundaries."""
     r, rs = seg_raw.compute(), seg_snap.compute()
     print(
         f"{'best':16s} {name:12s} RV={r['rval']:.3f} (snapped={rs['rval']:.3f})  "
@@ -68,7 +65,7 @@ def _print_segmentation(name, seg_raw, seg_snap):
 
 
 def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
-    """Cell 48 (best segmentation R-value) + cell 51 (oracle + pipeline phones)."""
+    """Best segmentation R-value + oracle and full-pipeline phone metrics."""
     frame_sec = frame_shift / sr
     oracle_utts, oracle_preds = [], []
     oracle_seqs, pipeline_seqs = [], []
@@ -116,8 +113,8 @@ def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
 
 
 def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift):
-    """Cell 48 (best segmentation R-value) + cell 52: VoxAngeles within-language
-    oracle, panphon-unrestricted PFER, and full pipeline (per-language vocab)."""
+    """Best segmentation R-value + VoxAngeles within-language oracle,
+    panphon-unrestricted PFER, and full pipeline (per-language vocab)."""
     frame_sec = frame_shift / sr
     ft = panphon.FeatureTable()
 

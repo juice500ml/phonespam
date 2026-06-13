@@ -152,7 +152,7 @@ def panphon_featmap(
             featmap[phone] = {name: 0 for name in active}
             featmap[phone]["silence+"] = 1
             continue
-        values = dict(zip(base_names, _panphon_numeric(phone)))
+        values = dict(zip(base_names, _panphon_numeric(phone), strict=True))
         row = {
             name: int(
                 (name.endswith("+") and values[name[:-1]] == 1)
@@ -211,7 +211,7 @@ class Recognizer:
         If the posteriogram was trained with TIMIT raw closure/release state
         channels, the classifier adds closure/release variants for stops and
         affricates. Those variants are internal prototypes; returned labels
-        are merged back to their base phone, matching the notebook oracle.
+        are merged back to their base phone, matching the oracle evaluation.
         """
         if featmap is not None:
             vocab = list(featmap)

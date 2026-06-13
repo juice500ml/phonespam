@@ -2,8 +2,7 @@
 
 The recognizer itself only accepts ``vocab=``. Use these helpers when a
 Phoible inventory is the source of that vocab, then pass the returned tuple
-directly to ``Recognizer.recognize(..., vocab=...)`` or
-``PhoneModel.recognize(..., vocab=...)``.
+directly to ``Recognizer.recognize(..., vocab=...)``.
 """
 
 from __future__ import annotations
