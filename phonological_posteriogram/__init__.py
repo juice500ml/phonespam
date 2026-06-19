@@ -1,13 +1,8 @@
 """Phone recognition and segmentation using phonological posteriograms."""
 
-from .evaluation import (
-    PhoneRecognitionEvaluator,
-    SegmentationEvaluator,
-    SegmentationUnit,
-)
 from .phone_model import PhoneModel
 from .posteriogram import PhonologicalPosteriogram
-from .recognizer import Recognizer
+from .recognizer import Recognizer, panphon_featmap
 from .segmenter import Segmenter
 
 try:
@@ -17,11 +12,9 @@ except ImportError:
 
 __all__ = [
     "PhoneModel",
-    "PhoneRecognitionEvaluator",
     "PhonologicalPosteriogram",
     "Recognizer",
-    "SegmentationEvaluator",
-    "SegmentationUnit",
     "Segmenter",
+    "panphon_featmap",
     "__version__",
 ]

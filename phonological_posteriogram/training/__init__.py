@@ -11,7 +11,7 @@ RuntimeWarning from ``runpy`` finding the submodule already in
 
 import importlib
 
-_LAZY = ("evaluate", "extract_features", "prepare_datasets", "train", "tune")
+_LAZY = ("extract_features", "prepare_datasets", "train")
 
 __all__ = list(_LAZY)
 

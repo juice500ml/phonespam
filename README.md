@@ -25,27 +25,25 @@ pip install "phonological-posteriogram[train]"
 HuggingFace-style loading from the Hub or a local path:
 
 ```python
-import librosa
-from phonological_posteriogram import PhonologicalPosteriogram
+from phonological_posteriogram import PhoneModel
 
-model = PhonologicalPosteriogram.from_pretrained("user/phonpost-wavlm-large")
-y, _ = librosa.load("utt.wav", sr=model.net_spec["sr"], mono=True)
+model = PhoneModel.from_pretrained("user/phonpost-wavlm-large")
 
-# Phone boundary times (seconds).
-boundaries = model.segment_seconds(y)
+# Load audio (resampled to the model's rate) and run the SSL encoder.
+wav = model.load_audio("utt.wav")
+feats = model.extract_features(wav)
 
-# Per-frame phonological posteriogram (T, n_features).
-post = model.posteriogram(y)
+# Per-frame phonological posteriogram / activation map, shape (T, n_features).
+# Columns are named by model.posteriogram.featnames.
+post = model.posteriogram.project(feats, view="ipa", act="sigmoid")
+
+# Phone boundaries as frame indices; convert to seconds via the encoder.
+boundaries = model.segmenter().segment(feats, wav)
+boundary_times = model.encoder.frame_to_time(boundaries)
 ```
 
 The encoder is lazy-loaded on first call, so `from_pretrained` is cheap if
 you just want to inspect or save the artifact.
-
-### CLI
-
-```bash
-phonological-posteriogram utt.wav --model user/phonpost-wavlm-large
-```
 
 ## Versioning
 

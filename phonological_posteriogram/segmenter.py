@@ -171,7 +171,7 @@ class Segmenter:
     # with different kwargs (e.g. frame_delta at three window widths). Each
     # component is shifted to its theoretical floor (SIGNAL_FAMILY_FLOOR) so it
     # is non-negative, and the components are multiplied — a fuzzy-AND boundary
-    # signal. The default is the notebook's best config:
+    # signal. The default is the best-performing config:
     # frame_delta(3 widths) + bwd_contrast(3 widths) + mel_svf.
     DEFAULT_COMBINED_SIGNALS = (
         {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2},

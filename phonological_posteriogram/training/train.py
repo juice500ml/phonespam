@@ -3,7 +3,7 @@
 Reads a pickled DataFrame produced by ``training/extract_features.py`` (its
 ``df.attrs`` carries ``hf_repo``, ``encoder_layer``, ``pool``, ``sr``), fits
 the ``ipa`` phonological-vector view and the backward regressor under the
-notebook's TIMIT closure/release label scheme, wraps them in a
+TIMIT closure/release label scheme, wraps them in a
 :class:`PhoneModel`, and saves the artifact so it can be reloaded with
 ``PhoneModel.from_pretrained``.
 
@@ -150,7 +150,7 @@ def run(args):
         )
 
     # The expensive step: fit the weights-only PhonologicalPosteriogram on the
-    # notebook's TIMIT closure/release label scheme from raw TIMIT features.
+    # TIMIT closure/release label scheme from raw TIMIT features.
     posteriogram = PhonologicalPosteriogram.fit_timit_closure_release(df)
 
     net_spec = {
