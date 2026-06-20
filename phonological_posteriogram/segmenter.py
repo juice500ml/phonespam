@@ -60,10 +60,15 @@ def _mel_svf(mel_frames, left, right, distance="cosine"):
 def _mel_svf_signal(audio, left, right, target_len, *, sr, mel_frame_shift_ms, distance="cosine"):
     mel = _melspec_kaldi(audio, sr=sr, frame_shift_ms=mel_frame_shift_ms)
     sig = _mel_svf(mel, left=left, right=right, distance=distance)
+    out = np.full(target_len, np.nan, dtype=np.float32)
     if len(sig) == 0 or target_len == 0:
-        return np.full(target_len, np.nan, dtype=np.float32)
-    indices = np.round(np.linspace(0, len(sig) - 1, target_len)).astype(int)
-    return sig[indices].astype(np.float32)
+        return out
+    # Mel frames run at half the S3M frame shift (10ms vs 20ms), so S3M frame t
+    # is exactly mel frame 2t: take every other mel frame.
+    sig = sig[::2]
+    n = min(len(sig), target_len)
+    out[:n] = sig[:n]
+    return out
 
 
 DISTANCES = ("cosine", "l2")
@@ -180,7 +185,7 @@ class Segmenter:
         {"name": "bwd_contrast", "kwargs": {"lookbehind": 2}, "shift": -1},
         {"name": "bwd_contrast", "kwargs": {"lookbehind": 3}, "shift": -1},
         {"name": "bwd_contrast", "kwargs": {"lookbehind": 1}, "shift": 0},
-        {"name": "mel_svf", "kwargs": {"left": 1, "right": 2}, "shift": 1},
+        {"name": "mel_svf", "kwargs": {"left": 2, "right": 1}, "shift": 0},
     )
     COMBINED_PROMINENCE = 0.001
 

@@ -50,7 +50,7 @@ BEST_COMBINED_SIGNALS = [
     {"name": "bwd_contrast", "kwargs": {"lookbehind": 2}, "shift": -1},
     {"name": "bwd_contrast", "kwargs": {"lookbehind": 3}, "shift": -1},
     {"name": "bwd_contrast", "kwargs": {"lookbehind": 1}, "shift": 0},
-    {"name": "mel_svf", "kwargs": {"left": 1, "right": 2}, "shift": 1},
+    {"name": "mel_svf", "kwargs": {"left": 2, "right": 1}, "shift": 0},
 ]
 
 
