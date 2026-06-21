@@ -69,8 +69,8 @@ def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
     frame_sec = frame_shift / sr
     oracle_utts, oracle_preds = [], []
     oracle_seqs, pipeline_seqs = [], []
-    seg_raw = PrecisionRecallMetric(tolerance=0.02)
-    seg_snap = PrecisionRecallMetric(tolerance=0.02)
+    seg_raw = PrecisionRecallMetric(tolerance=0.02, mode="strict")
+    seg_snap = PrecisionRecallMetric(tolerance=0.02, mode="strict")
 
     for utt in tqdm(utts, desc="TIMIT test", leave=False):
         wav = model.load_audio(utt.audio_path)
@@ -133,8 +133,8 @@ def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift):
 
     oracle_utts, oracle_preds = [], []
     oracle_seqs, panphon_seqs, pipeline_seqs = [], [], []
-    seg_raw = PrecisionRecallMetric(tolerance=0.02)
-    seg_snap = PrecisionRecallMetric(tolerance=0.02)
+    seg_raw = PrecisionRecallMetric(tolerance=0.02, mode="strict")
+    seg_snap = PrecisionRecallMetric(tolerance=0.02, mode="strict")
     for utt in tqdm(utts, desc="VoxAngeles", leave=False):
         wav = model.load_audio(utt.audio_path)
         feats = model.extract_features(wav)
