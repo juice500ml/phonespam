@@ -1,12 +1,14 @@
 """Evaluate phone-classification metrics from a library artifact.
 
 Loads a :class:`~phonological_posteriogram.phone_model.PhoneModel` (trained by
-``training/train.py``), hardcodes the best segmentation config, and reports,
-for both datasets, the best config's boundary R-value and the **oracle** +
-**full-pipeline** phone-recognition metrics.
+``training/train.py``), uses a fixed segmentation config, and reports, for both
+datasets, the boundary R-value and the **oracle** + **full-pipeline**
+phone-recognition metrics (PER, TER, PFER).
 
-Scoring uses the external ``phone_metrics`` package. GT segmentation/labels
-come from ``phone_metrics`` loaders, so labels are canonicalized consistently.
+PER and PFER are silence-free; TER is the token error rate that scores silence
+as an ordinary token. Scoring uses the external ``phone_metrics`` package. GT
+segmentation/labels come from ``phone_metrics`` loaders, so labels are
+canonicalized consistently.
 
 Run::
 
@@ -40,10 +42,10 @@ from tqdm import tqdm
 from phonological_posteriogram.phone_model import PhoneModel
 from phonological_posteriogram.recognizer import Recognizer, panphon_featmap
 
-# The best segmentation configuration (grid.json[0], also the library
+# The default segmentation configuration (grid.json[0], also the library
 # Segmenter's DEFAULT_COMBINED_SIGNALS). Hardcoded so the script is
 # self-contained and independent of the artifact's stored hparams.
-BEST_COMBINED_SIGNALS = [
+DEFAULT_COMBINED_SIGNALS = [
     {"name": "frame_delta", "kwargs": {"offset": 3}, "shift": 2},
     {"name": "frame_delta", "kwargs": {"offset": 2}, "shift": 1},
     {"name": "frame_delta", "kwargs": {"offset": 1}, "shift": 1},
@@ -54,21 +56,36 @@ BEST_COMBINED_SIGNALS = [
 ]
 
 
-def _print_segmentation(name, seg_raw, seg_snap):
-    """Best-config boundary R-value (raw + snapped), with precision/recall
-    reported from the raw (non-snapped) boundaries."""
+_LABEL = 16  # left-column width for aligned per-dataset output
+
+
+def _row(label, body):
+    print(f"  {label:{_LABEL}s}{body}")
+
+
+def _segmentation_body(seg_raw, seg_snap):
+    """Boundary R-value (raw + snapped); precision/recall from raw boundaries."""
     r, rs = seg_raw.compute(), seg_snap.compute()
-    print(
-        f"{'best':16s} {name:12s} RV={r['rval']:.3f} (snapped={rs['rval']:.3f})  "
-        f"P={r['precision']:.3f} R={r['recall']:.3f}"
+    return (
+        f"RV={r['rval']:.3f}  snapped={rs['rval']:.3f}  "
+        f"P={r['precision']:.3f}  R={r['recall']:.3f}"
     )
 
 
-def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
-    """Best segmentation R-value + oracle and full-pipeline phone metrics."""
+def _rates_body(er):
+    return f"PER={er.per:.4f}  TER={er.ter:.4f}  PFER={er.pfer:.4f}"
+
+
+def _macro_body(er):
+    return f"macro_lang  PER={er.macro_language_per:.4f}  PFER={er.macro_language_pfer:.4f}"
+
+
+def evaluate_timit(model, utts, recognizer, segmenter, *, featnames, sr, frame_shift):
+    """Segmentation R-value + oracle and full-pipeline phone metrics."""
     frame_sec = frame_shift / sr
+    panphon_rec = Recognizer(featnames=featnames)
     oracle_utts, oracle_preds = [], []
-    oracle_seqs, pipeline_seqs = [], []
+    oracle_seqs, panphon_seqs, pipeline_seqs, panphon_pipeline_seqs = [], [], [], []
     seg_raw = PrecisionRecallMetric(tolerance=0.02, mode="strict")
     seg_snap = PrecisionRecallMetric(tolerance=0.02, mode="strict")
 
@@ -80,9 +97,11 @@ def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
 
         bt = [s.end for s in segs[:-1]]  # inter-segment boundary times (seconds)
         labs = recognizer.recognize(post, bt, sr=sr, frame_shift=frame_shift)
-        assert len(labs) == len(segs), (len(labs), len(segs))
+        panphon_labs = panphon_rec.recognize(post, bt, sr=sr, frame_shift=frame_shift)
+        assert len(labs) == len(segs) == len(panphon_labs), (len(labs), len(segs))
         oracle_preds.extend(labs)
         oracle_seqs.append(list(labs))
+        panphon_seqs.append(list(panphon_labs))
         oracle_utts.append(utt)
 
         raw_bt = np.asarray(segmenter.segment(feats, wav, snap_silence=False)) * frame_sec
@@ -92,28 +111,27 @@ def evaluate_timit(model, utts, recognizer, segmenter, *, sr, frame_shift):
         pipeline_seqs.append(
             recognizer.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
         )
-
-    _print_segmentation("TIMIT_test", seg_raw, seg_snap)
+        panphon_pipeline_seqs.append(
+            panphon_rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
+        )
 
     acc = oracle_phone_accuracy(oracle_utts, oracle_preds, label="ipa")
     er = phone_error_rates(oracle_utts, oracle_seqs, label="ipa")
+    panphon_er = phone_error_rates(oracle_utts, panphon_seqs, label="ipa")
     pipe_er = phone_error_rates(oracle_utts, pipeline_seqs, label="ipa")
-    print(
-        f"TIMIT merged-phone center-frame accuracy "
-        f"(oracle, n={acc.total}): {acc.accuracy:.4f}"
-    )
-    print(
-        f"TIMIT merged-phone center-frame error rates "
-        f"(oracle, n={er.reference_total}): PER={er.per:.4f}  PFER={er.pfer:.4f}"
-    )
-    print(
-        f"TIMIT full-pipeline phone error rates (best segmentation + recognizer, "
-        f"n={pipe_er.reference_total}): PER={pipe_er.per:.4f}  PFER={pipe_er.pfer:.4f}"
-    )
+    panphon_pipe_er = phone_error_rates(oracle_utts, panphon_pipeline_seqs, label="ipa")
+
+    print(f"\nTIMIT test  ({er.token_total} ref tokens)")
+    _row("segmentation", _segmentation_body(seg_raw, seg_snap))
+    _row("oracle acc", f"{acc.accuracy:.4f}  (n={acc.total} merged phones)")
+    _row("oracle rates", _rates_body(er))
+    _row("oracle PFER", f"{panphon_er.pfer:.4f}  (panphon-unrestricted)")
+    _row("pipeline rates", _rates_body(pipe_er))
+    _row("pipeline PFER", f"{panphon_pipe_er.pfer:.4f}  (panphon-unrestricted)")
 
 
 def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift):
-    """Best segmentation R-value + VoxAngeles within-language oracle,
+    """Segmentation R-value + VoxAngeles within-language oracle,
     panphon-unrestricted PFER, and full pipeline (per-language vocab)."""
     frame_sec = frame_shift / sr
     ft = panphon.FeatureTable()
@@ -132,7 +150,7 @@ def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift):
     panphon_rec = Recognizer(featnames=featnames)
 
     oracle_utts, oracle_preds = [], []
-    oracle_seqs, panphon_seqs, pipeline_seqs = [], [], []
+    oracle_seqs, panphon_seqs, pipeline_seqs, panphon_pipeline_seqs = [], [], [], []
     seg_raw = PrecisionRecallMetric(tolerance=0.02, mode="strict")
     seg_snap = PrecisionRecallMetric(tolerance=0.02, mode="strict")
     for utt in tqdm(utts, desc="VoxAngeles", leave=False):
@@ -158,37 +176,26 @@ def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift):
         pipeline_seqs.append(
             rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
         )
-
-    _print_segmentation("VoxAngeles", seg_raw, seg_snap)
+        panphon_pipeline_seqs.append(
+            panphon_rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
+        )
 
     acc = oracle_phone_accuracy(oracle_utts, oracle_preds, label="ipa")
     er = phone_error_rates(oracle_utts, oracle_seqs, label="ipa")
     panphon_er = phone_error_rates(oracle_utts, panphon_seqs, label="ipa")
     pipe_er = phone_error_rates(oracle_utts, pipeline_seqs, label="ipa")
+    panphon_pipe_er = phone_error_rates(oracle_utts, panphon_pipeline_seqs, label="ipa")
     n_langs = len({u.language for u in oracle_utts})
-    print(
-        f"VoxAngeles within-language phone accuracy "
-        f"(oracle, {n_langs} languages, n={acc.total}): "
-        f"micro={acc.accuracy:.4f}  macro_lang={acc.macro_language:.4f}"
-    )
-    print(
-        f"VoxAngeles within-language phone error rates "
-        f"(oracle, {n_langs} languages, n={er.reference_total}): "
-        f"PER={er.per:.4f}  PFER={er.pfer:.4f}  "
-        f"macro_lang_PER={er.macro_language_per:.4f}  "
-        f"macro_lang_PFER={er.macro_language_pfer:.4f}"
-    )
-    print(
-        f"VoxAngeles panphon-unrestricted PFER "
-        f"(oracle, n={panphon_er.reference_total}): {panphon_er.pfer:.4f}"
-    )
-    print(
-        f"VoxAngeles full-pipeline phone error rates (best segmentation + recognizer, "
-        f"{n_langs} languages, n={pipe_er.reference_total}): "
-        f"PER={pipe_er.per:.4f}  PFER={pipe_er.pfer:.4f}  "
-        f"macro_lang_PER={pipe_er.macro_language_per:.4f}  "
-        f"macro_lang_PFER={pipe_er.macro_language_pfer:.4f}"
-    )
+
+    print(f"\nVoxAngeles  ({n_langs} languages, {er.token_total} ref tokens)")
+    _row("segmentation", _segmentation_body(seg_raw, seg_snap))
+    _row("oracle acc", f"micro={acc.accuracy:.4f}  macro_lang={acc.macro_language:.4f}  (n={acc.total})")
+    _row("oracle rates", _rates_body(er))
+    _row("", _macro_body(er))
+    _row("oracle PFER", f"{panphon_er.pfer:.4f}  (panphon-unrestricted)")
+    _row("pipeline rates", _rates_body(pipe_er))
+    _row("", _macro_body(pipe_er))
+    _row("pipeline PFER", f"{panphon_pipe_er.pfer:.4f}  (panphon-unrestricted)")
 
 
 def main(argv=None):
@@ -205,7 +212,7 @@ def main(argv=None):
     sr = model.net_spec["sr"]
     frame_shift = model.encoder.stride_size
     featnames = model.posteriogram.featnames
-    segmenter = model.segmenter({"combined_signals": BEST_COMBINED_SIGNALS})
+    segmenter = model.segmenter({"combined_signals": DEFAULT_COMBINED_SIGNALS})
 
     if not args.skip_timit:
         timit_rec = Recognizer(
@@ -216,6 +223,7 @@ def main(argv=None):
             load_timit(args.timit_root, split="test"),
             timit_rec,
             segmenter,
+            featnames=featnames,
             sr=sr,
             frame_shift=frame_shift,
         )
