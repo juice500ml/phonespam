@@ -9,6 +9,7 @@ settings can be compared without refitting the posteriogram. A future
 
 from __future__ import annotations
 
+import contextlib
 import warnings
 
 import numpy as np
@@ -24,19 +25,45 @@ warnings.filterwarnings("ignore", message="Support for mismatched key_padding_ma
 # --------------------------------------------------------------------------- #
 
 
+@contextlib.contextmanager
+def _single_threaded():
+    """Pin torch to one intra-op thread for the duration of the block.
+
+    One utterance of filterbank is a few hundred tiny torch ops, and the
+    caller interleaves them with NumPy BLAS matmuls. On a many-core box
+    the two thread pools contend for the same cores and the filterbank
+    runs ~45x slower than it does on one thread (measured on 24 cores:
+    RTF 0.053 against 0.0012 for the whole segmenter). There is no
+    utterance long enough for the pool to pay for itself here -- a frame
+    is 40 mel bins -- so this is a fix, not a tuning choice. Setting and
+    restoring costs ~0.3us against a ~4ms call.
+
+    torch's thread count is process-global, so concurrent ``segment()``
+    calls from several Python threads will race on the restore and can
+    leave the process on a single thread.
+    """
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(previous)
+
+
 def _melspec_kaldi(y, *, sr, frame_shift_ms, n_mels=40):
     waveform = torch.from_numpy(np.asarray(y, dtype=np.float32)).unsqueeze(0)
-    feats = kaldi.fbank(
-        waveform,
-        sample_frequency=float(sr),
-        frame_length=25.0,
-        frame_shift=frame_shift_ms,
-        num_mel_bins=n_mels,
-        use_power=True,
-        use_energy=False,
-        dither=0.0,
-        snip_edges=False,
-    )
+    with _single_threaded():
+        feats = kaldi.fbank(
+            waveform,
+            sample_frequency=float(sr),
+            frame_length=25.0,
+            frame_shift=frame_shift_ms,
+            num_mel_bins=n_mels,
+            use_power=True,
+            use_energy=False,
+            dither=0.0,
+            snip_edges=False,
+        )
     return feats.cpu().numpy()
 
 
