@@ -1,14 +1,16 @@
 """Smoke tests that don't require any model downloads or audio files."""
 
+import warnings
+
 import numpy as np
 import pytest
 import torch
 
-import phonological_posteriogram as pp
-from phonological_posteriogram.phone_model import PhoneModel
-from phonological_posteriogram.posteriogram import PhonologicalPosteriogram
-from phonological_posteriogram.recognizer import Recognizer
-from phonological_posteriogram.segmenter import Segmenter
+import phonespam as pp
+from phonespam.phone_model import PhoneModel
+from phonespam.posteriogram import PhonologicalPosteriogram
+from phonespam.recognizer import Recognizer
+from phonespam.segmenter import Segmenter
 
 NET_SPEC = {
     "hf_repo": "microsoft/wavlm-large",
@@ -81,7 +83,10 @@ def _make_phone_model(monkeypatch, posteriogram, net_spec, *, n_feat=3):
     model._encoder = type(
         "FakeEncoder",
         (),
-        {"frame_to_time": staticmethod(lambda idxs: np.asarray(idxs, dtype=float) * 0.02)},
+        {
+            "frame_to_time": staticmethod(lambda idxs: np.asarray(idxs, dtype=float) * 0.02),
+            "stride_size": 320,
+        },
     )()
     return model
 
@@ -209,7 +214,7 @@ def test_from_pretrained_accepts_file_path(tmp_path, monkeypatch):
     artifact = _make_artifact()
     torch.save(artifact, tmp_path / "custom.pt")
     model = PhoneModel.from_pretrained(tmp_path / "custom.pt")
-    assert model.segmenter().sr == 16000
+    assert model.segmenter.sr == 16000
 
 
 def test_ssl_encoder_frame_to_time():
@@ -217,7 +222,7 @@ def test_ssl_encoder_frame_to_time():
     its round-trip inverse. The pre-pad in __call__ centers each frame on its
     stride window, so no receptive-field term is needed. PhoneModel reuses this
     map directly (no PhoneModel.frame_to_time)."""
-    from phonological_posteriogram.features import SSLEncoder
+    from phonespam.features import SSLEncoder
 
     enc = SSLEncoder.__new__(SSLEncoder)  # bypass the model download
     enc.stride_size = 320
@@ -232,9 +237,24 @@ def test_ssl_encoder_frame_to_time():
         assert int(enc.time_to_frame(np.array([idx * 320 / 16000]))[0]) == idx
 
 
-def test_phoible_resolves_unknown_language():
-    from phonological_posteriogram.phoible import inventory_id_for_language
+def _phoible_or_skip():
+    """The PHOIBLE table is downloaded on first use; skip if it can't be had.
 
+    Keeps the suite runnable offline without weakening the assertions that
+    do run when the table is present.
+    """
+    from phonespam.phoible import _phoible
+
+    try:
+        return _phoible()
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"PHOIBLE inventory table unavailable: {e}")
+
+
+def test_phoible_resolves_unknown_language():
+    from phonespam.phoible import inventory_id_for_language
+
+    _phoible_or_skip()
     with pytest.raises(ValueError, match="not found in Phoible"):
         inventory_id_for_language("zzz_no_such_language")
 
@@ -244,9 +264,9 @@ def test_recognizer_ambiguous_language_falls_back_to_smallest_id():
     is used (with a warning pointing at phoible.org for context)."""
     import pandas as pd
 
-    from phonological_posteriogram.phoible import _phoible, inventory_id_for_language
+    from phonespam.phoible import inventory_id_for_language
 
-    df = _phoible()
+    df = _phoible_or_skip()
     inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
     counts = df.groupby("LanguageName")["InventoryID"].nunique()
     # A multi-inventory language where NONE is dialect-free (NaN) → smallest.
@@ -269,9 +289,9 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
     it is preferred over lower-numbered dialected inventories."""
     import pandas as pd
 
-    from phonological_posteriogram.phoible import _phoible, inventory_id_for_language
+    from phonespam.phoible import inventory_id_for_language
 
-    df = _phoible()
+    df = _phoible_or_skip()
     inv_dialect = df.drop_duplicates("InventoryID").set_index("InventoryID")["SpecificDialect"]
     counts = df.groupby("LanguageName")["InventoryID"].nunique()
     # A multi-inventory language with exactly one dialect-free (NaN) inventory
@@ -291,11 +311,11 @@ def test_recognizer_ambiguous_language_prefers_dialect_free():
 
 
 def test_phoible_vocab_helpers():
-    """Phoible CSV is packaged and parses correctly; vocab_for_inventory drops
+    """Phoible CSV resolves and parses correctly; vocab_for_inventory drops
     phones panphon doesn't recognize."""
-    from phonological_posteriogram.phoible import _phoible, vocab_for_inventory
+    from phonespam.phoible import vocab_for_inventory
 
-    df = _phoible()
+    df = _phoible_or_skip()
     # Pick the first inventory and verify allophone parsing.
     inv_id = int(df["InventoryID"].iloc[0])
     phonemes = vocab_for_inventory(inv_id, phoneme=True)
@@ -309,7 +329,9 @@ def test_phoible_vocab_helpers():
 def test_recognizer_closure_release_internal_labels_merge_to_base():
     """Closure/release state channels add internal stop variants whose
     returned labels are merged back to the ordinary phone."""
-    rec = Recognizer(featnames=["silence+", "cons+", "closure+", "closure-", "release+", "release-"])
+    rec = Recognizer(
+        featnames=["silence+", "cons+", "closure+", "closure-", "release+", "release-"]
+    )
     p_cl = rec.vocab.index("p_cl")
     p_rl = rec.vocab.index("p_rl")
     assert rec._output_labels[p_cl] == "p"
@@ -338,7 +360,7 @@ def test_recognizer_fitted_featmap_labels_can_separate_output_from_features():
 
 
 def test_panphon_featmap_sparse_rows_ignore_omitted_dimensions():
-    from phonological_posteriogram.recognizer import panphon_featmap
+    from phonespam.recognizer import panphon_featmap
 
     pytest.importorskip("panphon")
 
@@ -349,13 +371,14 @@ def test_panphon_featmap_sparse_rows_ignore_omitted_dimensions():
     assert "closure+" not in featmap["p"]
 
     rec = Recognizer(featnames=featnames, featmap=featmap)
-    # `closure+` strongly favors "p" if included, but sparse scoring ignores it.
-    post = np.asarray([[0.0, 0.25, 1.0, 100.0]], dtype=np.float32)
+    # `closure+` favors "p" if included, but sparse scoring ignores it. 1.0 is
+    # the top of the sigmoid range, so this stays a valid posteriogram.
+    post = np.asarray([[0.0, 0.25, 1.0, 1.0]], dtype=np.float32)
     assert rec.recognize(post, [], sr=16000) == ["m"]
 
 
 def test_panphon_featmap_supports_silence_token():
-    from phonological_posteriogram.recognizer import panphon_featmap
+    from phonespam.recognizer import panphon_featmap
 
     pytest.importorskip("panphon")
 
@@ -410,7 +433,7 @@ def test_recognizer_handles_empty_boundaries():
 
 def test_recognizer_vocab_constrains_output(monkeypatch):
     """Passing ``vocab=`` constrains the argmax to those phones (+ silence)."""
-    import phonological_posteriogram.recognizer as rec_mod
+    import phonespam.recognizer as rec_mod
 
     # The fake vocab names ("phone_0", ...) aren't panphon-known, so stub
     # _validate_vocab to pass them through unchanged.
@@ -432,7 +455,7 @@ def test_recognizer_vocab_constrains_output(monkeypatch):
 
 def test_recognizer_vocab_unknown_phones_are_filtered(recwarn):
     """Unknown phones in user vocab are dropped (with a warning)."""
-    from phonological_posteriogram.recognizer import _validate_vocab
+    from phonespam.recognizer import _validate_vocab
 
     # Real panphon-known phones plus a junk one. _validate_vocab is cached;
     # use a unique junk token so this test isn't affected by prior runs.
@@ -445,7 +468,7 @@ def test_recognizer_vocab_unknown_phones_are_filtered(recwarn):
 
 def test_recognizer_vocab_all_unknown_raises():
     """A vocab whose phones decompose to *no* panphon segments raises."""
-    from phonological_posteriogram.recognizer import _validate_vocab
+    from phonespam.recognizer import _validate_vocab
 
     pytest.importorskip("panphon")
     # Pure punctuation/digits: ipa_segs() yields nothing for either token,
@@ -458,7 +481,7 @@ def test_filter_panphon_known_decomposes_multisegment_phones():
     """Multi-segment Phoible phones (ts, mb, ...) decompose into their
     component panphon segments instead of being dropped wholesale; the
     result is de-duplicated."""
-    from phonological_posteriogram.recognizer import _filter_panphon_known
+    from phonespam.recognizer import _filter_panphon_known
 
     pytest.importorskip("panphon")
     # "ts" -> t,s ; "mb" -> m,b ; "b" -> b (b is a dup, dropped).
@@ -469,7 +492,7 @@ def test_filter_panphon_known_decomposes_multisegment_phones():
 def test_filter_panphon_known_keeps_recognized_parts_and_warns():
     """A phone that doesn't round-trip still contributes the segments
     panphon *did* recognize, but a warning flags the partial match."""
-    from phonological_posteriogram.recognizer import _filter_panphon_known
+    from phonespam.recognizer import _filter_panphon_known
 
     pytest.importorskip("panphon")
     # "k̚" (unreleased k) loses the ◌̚ diacritic in ipa_segs → "k"; the
@@ -498,8 +521,8 @@ def test_phone_model_segmenter_hparam_override(monkeypatch):
     """The point of the refactor: building a Segmenter with different
     hparams is cheap and shares the (expensive) posteriogram weights."""
     model = _make_phone_model(monkeypatch, _make_posteriogram(), dict(NET_SPEC))
-    seg_a = model.segmenter()
-    seg_b = model.segmenter({"combined_prominence": 0.25})
+    seg_a = model.segmenter
+    seg_b = seg_a.with_hparams({"combined_prominence": 0.25})
 
     assert seg_a.posteriogram is seg_b.posteriogram  # weights not copied
     assert seg_b.hparams["combined_prominence"] == 0.25
@@ -551,7 +574,7 @@ def test_segmenter_combines_duplicate_signal_specs():
 
 
 def test_pair_distance_methods():
-    from phonological_posteriogram.segmenter import _pair_distance
+    from phonespam.segmenter import _pair_distance
 
     a = np.array([[1.0, 0.0], [1.0, 0.0]])
     b = np.array([[1.0, 0.0], [0.0, 1.0]])
@@ -638,7 +661,7 @@ def _make_synthetic_features_pkl(tmp_path):
 def test_training_train_requires_features_attrs(tmp_path):
     """Missing df.attrs keys produce a clear error, not an opaque crash."""
     pd = pytest.importorskip("pandas")
-    train_mod = pytest.importorskip("phonological_posteriogram.training.train")
+    train_mod = pytest.importorskip("phonespam.training.train")
 
     pkl_path = tmp_path / "bad.pkl"
     pd.DataFrame({"ipa": ["a"], "feat": [np.zeros(4, dtype=np.float32)]}).to_pickle(pkl_path)
@@ -657,7 +680,7 @@ def test_training_train_requires_features_attrs(tmp_path):
 
 def test_training_train_end_to_end(tmp_path):
     """Fit on a synthetic features pkl, save, and reload via from_pretrained."""
-    train_mod = pytest.importorskip("phonological_posteriogram.training.train")
+    train_mod = pytest.importorskip("phonespam.training.train")
 
     pkl_path = _make_synthetic_features_pkl(tmp_path)
     out_dir = tmp_path / "trained"
@@ -685,3 +708,253 @@ def test_training_train_end_to_end(tmp_path):
     # Silence detection lives on the posteriogram (silence+ channel); the
     # fitted vocab includes "_", so the feature is present.
     assert "silence+" in reloaded.posteriogram.featnames
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end convenience API                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def _transcribe_model(monkeypatch, n_feat=3):
+    """A PhoneModel wired so transcribe() runs without any downloads."""
+    post = _make_posteriogram(n_feat=n_feat)
+    model = _make_phone_model(monkeypatch, post, dict(NET_SPEC), n_feat=n_feat)
+    # 50 frames at stride 320 / 16 kHz == 1.0 s of audio.
+    monkeypatch.setattr(model, "extract_features", lambda wav: np.zeros((50, 4), dtype=np.float32))
+    # Record how project() was called: the sigmoid activation is part of the
+    # contract transcribe() exists to encapsulate, so it has to be asserted.
+    model.project_calls = []
+
+    def fake_project(self, feats, view="ipa", act="none"):
+        model.project_calls.append({"view": view, "act": act})
+        return np.zeros((len(feats), n_feat), dtype=np.float32)
+
+    monkeypatch.setattr(PhonologicalPosteriogram, "project", fake_project)
+    return model
+
+
+def test_transcribe_projects_with_sigmoid_activation(monkeypatch):
+    """The recognizer scores sigmoid activations; project() defaults to raw."""
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(Segmenter, "segment", lambda self, f, w, snap_silence=None: np.array([10]))
+
+    model.transcribe(np.zeros(16000, dtype=np.float32))
+
+    assert model.project_calls == [{"view": "ipa", "act": "sigmoid"}]
+
+
+def test_transcribe_returns_contiguous_labelled_segments(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(
+        Segmenter, "segment", lambda self, f, w, snap_silence=None: np.array([10, 25])
+    )
+
+    segs = model.transcribe(np.zeros(16000, dtype=np.float32))
+
+    assert [type(s).__name__ for s in segs] == ["Segment"] * 3
+    # One label per segment defined by the boundaries.
+    assert len(segs) == 3
+    # Contiguous and ordered, tiling the whole utterance.
+    assert segs[0].start == 0.0
+    assert segs[-1].end == pytest.approx(1.0)
+    for a, b in zip(segs[:-1], segs[1:], strict=True):
+        assert a.end == b.start
+        assert a.start < a.end
+    assert all(isinstance(s.label, str) for s in segs)
+
+
+def test_transcribe_emits_seconds_not_frame_indices(monkeypatch):
+    """The frames->seconds conversion is the whole point of transcribe().
+
+    Frame 10 at stride 320 / 16 kHz is 0.2 s. Returning 10.0 here would mean
+    the raw frame index leaked into a field documented as seconds.
+    """
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(
+        Segmenter, "segment", lambda self, f, w, snap_silence=None: np.array([10, 25])
+    )
+
+    segs = model.transcribe(np.zeros(16000, dtype=np.float32))
+
+    assert segs[0].end == pytest.approx(0.2)
+    assert segs[1].end == pytest.approx(0.5)
+
+
+def test_transcribe_passes_vocab_through(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(Segmenter, "segment", lambda self, f, w, snap_silence=None: np.array([10]))
+    seen = {}
+
+    def fake_recognize(post, boundaries, *, sr, frame_shift=320, vocab=None):
+        seen.update(sr=sr, frame_shift=frame_shift, vocab=vocab)
+        return ["a"] * (len(boundaries) + 1)
+
+    monkeypatch.setattr(model.recognizer, "recognize", fake_recognize)
+    model.transcribe(np.zeros(16000, dtype=np.float32), vocab=("a", "b"))
+
+    # sr and frame_shift come from the model, not from the caller.
+    assert seen == {"sr": 16000, "frame_shift": 320, "vocab": ("a", "b")}
+
+
+def test_boundaries_returns_seconds(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(
+        Segmenter, "segment", lambda self, f, w, snap_silence=None: np.array([10, 25])
+    )
+
+    bt = model.boundaries(np.zeros(16000, dtype=np.float32))
+
+    np.testing.assert_allclose(bt, [0.2, 0.5])
+
+
+def test_recognize_warns_when_boundaries_look_like_frame_indices():
+    """Frame indices passed as seconds clip to the utterance end in silence."""
+    rec = _make_recognizer()
+    post = np.zeros((50, 3), dtype=np.float32)  # 50 frames == 1.0 s
+    with pytest.warns(UserWarning, match="exceed the utterance duration"):
+        labels = rec.recognize(post, [10, 25], sr=16000, frame_shift=320)
+    assert len(labels) == 3  # still returns the right count -- hence the warning
+
+
+def test_recognize_does_not_warn_on_valid_boundary_times():
+    rec = _make_recognizer()
+    post = np.zeros((50, 3), dtype=np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        rec.recognize(post, [0.2, 0.5], sr=16000, frame_shift=320)
+
+
+def test_recognize_warns_on_raw_posteriogram():
+    rec = _make_recognizer()
+    raw = np.array([[-2.0, 3.0, 0.5]], dtype=np.float32)
+    with pytest.warns(UserWarning, match="outside the .0, 1. range"):
+        rec.recognize(raw, [], sr=16000, frame_shift=320)
+
+
+def test_recognize_does_not_warn_on_sigmoid_posteriogram():
+    rec = _make_recognizer()
+    sig = np.array([[0.0, 1.0, 0.5]], dtype=np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        rec.recognize(sig, [], sr=16000, frame_shift=320)
+
+
+def test_vocab_helpers_are_exported():
+    """Phoible vocab helpers are reachable without knowing the submodule."""
+    assert pp.vocab_for_language is not None
+    assert pp.vocab_for_inventory is not None
+    assert pp.inventory_id_for_language is not None
+    assert pp.Segment._fields == ("start", "end", "label")
+
+
+def test_recognizer_and_segmenter_are_symmetric_lazy_properties(monkeypatch):
+    """Both are attributes, both built on demand, both replaceable."""
+    monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
+    post = _make_posteriogram()
+    model = PhoneModel(post, net_spec=dict(NET_SPEC))
+
+    # Nothing is built until it is asked for.
+    assert model._recognizer is None
+    assert model._segmenter is None
+
+    rec, seg = model.recognizer, model.segmenter
+    assert isinstance(seg, Segmenter)
+    # Cached: a second access returns the identical object.
+    assert model.recognizer is rec
+    assert model.segmenter is seg
+
+    # Replaceable, so a custom component can be swapped in.
+    other = Segmenter(post, sr=16000)
+    model.segmenter = other
+    assert model.segmenter is other
+
+
+def test_segmenter_overrides_do_not_mutate_the_model(monkeypatch):
+    monkeypatch.setattr(Recognizer, "__init__", lambda self, **kw: None)
+    model = PhoneModel(_make_posteriogram(), net_spec=dict(NET_SPEC))
+    base = model.segmenter.hparams["combined_prominence"]
+
+    tweaked = model.segmenter.with_hparams({"combined_prominence": 0.5})
+
+    assert tweaked.hparams["combined_prominence"] == 0.5
+    assert model.segmenter.hparams["combined_prominence"] == base
+    assert tweaked.posteriogram is model.segmenter.posteriogram  # weights shared
+
+
+def test_spam_carries_featnames_and_times(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+
+    spam = model.spam(np.zeros(16000, dtype=np.float32))
+
+    assert spam.shape == (50, 3)
+    assert spam.featnames == tuple(model.posteriogram.featnames)
+    # Frame k starts at k * stride / sr = k * 0.02 s.
+    np.testing.assert_allclose(spam.times[:3], [0.0, 0.02, 0.04])
+    assert spam.act == "sigmoid"
+    assert "frames=50" in repr(spam)
+
+
+def test_spam_act_is_forwarded(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+
+    model.spam(np.zeros(16000, dtype=np.float32), act="none")
+
+    assert model.project_calls == [{"view": "ipa", "act": "none"}]
+
+
+def test_spam_behaves_as_an_array(monkeypatch):
+    """np.asarray() gives the bare matrix, so it drops into numpy and
+    straight into Recognizer.recognize()."""
+    model = _transcribe_model(monkeypatch)
+    spam = model.spam(np.zeros(16000, dtype=np.float32))
+
+    arr = np.asarray(spam)
+    assert arr.shape == (50, 3)
+    assert len(spam) == 50
+    labels = model.recognizer.recognize(spam, [0.2], sr=16000, frame_shift=320)
+    assert len(labels) == 2
+
+
+def test_spam_select_picks_columns_by_name(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    spam = model.spam(np.zeros(16000, dtype=np.float32))
+    names = list(spam.featnames)
+
+    picked = spam.select([names[2], names[0]])
+
+    assert picked.featnames == (names[2], names[0])
+    assert picked.shape == (50, 2)
+    np.testing.assert_array_equal(picked.values[:, 0], spam.values[:, 2])
+    np.testing.assert_array_equal(picked.times, spam.times)
+
+
+def test_spam_select_rejects_unknown_names(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    spam = model.spam(np.zeros(16000, dtype=np.float32))
+
+    with pytest.raises(KeyError, match="unknown feature name"):
+        spam.select(["no_such_feature"])
+
+
+def test_spam_to_frame(monkeypatch):
+    pd = pytest.importorskip("pandas")
+    model = _transcribe_model(monkeypatch)
+
+    df = model.spam(np.zeros(16000, dtype=np.float32)).to_frame()
+
+    assert isinstance(df, pd.DataFrame)
+    assert list(df.columns) == list(model.posteriogram.featnames)
+    assert df.index.name == "time"
+    assert len(df) == 50
+
+
+def test_spam_from_features_skips_the_encoder(monkeypatch):
+    """The escape hatch for reusing features across spam() and transcribe()."""
+    model = _transcribe_model(monkeypatch)
+
+    def boom(wav):
+        raise AssertionError("extract_features should not be called")
+
+    monkeypatch.setattr(model, "extract_features", boom)
+    spam = model.spam_from_features(np.zeros((50, 4), dtype=np.float32))
+    assert spam.shape == (50, 3)

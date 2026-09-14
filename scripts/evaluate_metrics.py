@@ -1,6 +1,6 @@
 """Evaluate phone-classification metrics from a library artifact.
 
-Loads a :class:`~phonological_posteriogram.phone_model.PhoneModel` (trained by
+Loads a :class:`~phonespam.phone_model.PhoneModel` (trained by
 ``training/train.py``), uses a fixed segmentation config, and reports, for both
 datasets, the boundary R-value and the **oracle** + **full-pipeline**
 phone-recognition metrics (PER, TER, PFER).
@@ -39,18 +39,24 @@ from pathlib import Path
 import numpy as np
 import panphon
 import panphon.distance
-from phone_metrics import (
-    PrecisionRecallMetric,
-    load_timit,
-    load_voxangeles,
-    oracle_phone_accuracy,
-    phone_error_rates,
-    tokenize_ipa,
-)
+
+try:
+    from phone_metrics import (
+        PrecisionRecallMetric,
+        load_timit,
+        load_voxangeles,
+        oracle_phone_accuracy,
+        phone_error_rates,
+        tokenize_ipa,
+    )
+except ImportError as e:  # pragma: no cover - depends on the environment
+    raise ImportError(
+        "phone-metrics is required for metric evaluation, but it is not on PyPI. Install it with:\n    pip install 'phone-metrics @ git+https://github.com/stephenmac7/phone-metrics.git'\nor, with uv, `uv sync --group train`."
+    ) from e
 from tqdm import tqdm
 
-from phonological_posteriogram.phone_model import PhoneModel
-from phonological_posteriogram.recognizer import Recognizer, panphon_featmap
+from phonespam.phone_model import PhoneModel
+from phonespam.recognizer import Recognizer, panphon_featmap
 
 # The default segmentation configuration (grid.json[0], also the library
 # Segmenter's DEFAULT_COMBINED_SIGNALS). Hardcoded so the script is
@@ -157,17 +163,15 @@ def _split_pfer_by_vocab(utts, pred_seqs, vocab, *, dist):
     """
     cost = {"in": 0.0, "oov": 0.0}
     total = {"in": 0, "oov": 0}
-    for utt, preds in zip(utts, pred_seqs):
+    for utt, preds in zip(utts, pred_seqs, strict=True):
         assert len(preds) == len(utt.segments)
-        for seg, pred in zip(utt.segments, preds):
+        for seg, pred in zip(utt.segments, preds, strict=True):
             if seg.ipa_label == _SILENCE:
                 continue
             ref_toks = _expand_label(seg.ipa_label)
             pred_toks = [t for t in _expand_label(pred) if t != _SILENCE]
             bucket = "in" if all(t in vocab for t in ref_toks) else "oov"
-            cost[bucket] += float(
-                dist.feature_edit_distance("".join(pred_toks), "".join(ref_toks))
-            )
+            cost[bucket] += float(dist.feature_edit_distance("".join(pred_toks), "".join(ref_toks)))
             total[bucket] += len(ref_toks)
     return cost, total
 
@@ -181,9 +185,9 @@ def _silence_pr(utts, pred_seqs):
     predicted as silence. Returns ``(precision, recall, tp, fp, fn)`` (micro).
     """
     tp = fp = fn = 0
-    for utt, preds in zip(utts, pred_seqs):
+    for utt, preds in zip(utts, pred_seqs, strict=True):
         assert len(preds) == len(utt.segments)
-        for seg, pred in zip(utt.segments, preds):
+        for seg, pred in zip(utt.segments, preds, strict=True):
             ref_sil, pred_sil = seg.ipa_label == _SILENCE, pred == _SILENCE
             tp += ref_sil and pred_sil
             fp += pred_sil and not ref_sil
@@ -202,8 +206,7 @@ def _segmentation_body(seg_raw, seg_snap):
     """Boundary R-value (raw + snapped); precision/recall from raw boundaries."""
     r, rs = seg_raw.compute(), seg_snap.compute()
     return (
-        f"RV={r['rval']:.3f}  snapped={rs['rval']:.3f}  "
-        f"P={r['precision']:.3f}  R={r['recall']:.3f}"
+        f"RV={r['rval']:.3f}  snapped={rs['rval']:.3f}  P={r['precision']:.3f}  R={r['recall']:.3f}"
     )
 
 
@@ -239,9 +242,7 @@ def evaluate_timit(model, utts, recognizer, segmenter, *, featnames, sr, frame_s
 
         seg_raw.update(utt.boundaries, raw_bt)
         seg_snap.update(utt.boundaries, pipe_bt)
-        pipeline_seqs.append(
-            recognizer.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
-        )
+        pipeline_seqs.append(recognizer.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift))
         panphon_pipeline_seqs.append(
             panphon_rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
         )
@@ -305,9 +306,7 @@ def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift, timit_vo
 
         seg_raw.update(utt.boundaries, raw_bt)
         seg_snap.update(utt.boundaries, pipe_bt)
-        pipeline_seqs.append(
-            rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
-        )
+        pipeline_seqs.append(rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift))
         panphon_pipeline_seqs.append(
             panphon_rec.recognize(post, pipe_bt, sr=sr, frame_shift=frame_shift)
         )
@@ -338,7 +337,10 @@ def evaluate_vox(model, utts, segmenter, *, featnames, sr, frame_shift, timit_vo
 
     print(f"\nVoxAngeles  ({n_langs} languages, {er.token_total} ref tokens)")
     _row("segmentation", _segmentation_body(seg_raw, seg_snap))
-    _row("oracle acc", f"micro={acc.accuracy:.4f}  macro_lang={acc.macro_language:.4f}  (n={acc.total})")
+    _row(
+        "oracle acc",
+        f"micro={acc.accuracy:.4f}  macro_lang={acc.macro_language:.4f}  (n={acc.total})",
+    )
     _row("oracle rates", _rates_body(er))
     _row("", _macro_body(er))
     _row("oracle PFER", f"{panphon_er.pfer:.4f}  (panphon-unrestricted)")
@@ -366,10 +368,10 @@ def main(argv=None):
     cache_dir = os.environ.get("CACHE_DIR") or None
 
     model = PhoneModel.from_pretrained(args.model, device=args.device)
-    sr = model.net_spec["sr"]
-    frame_shift = model.encoder.stride_size
+    sr = model.sr
+    frame_shift = model.frame_shift
     featnames = model.posteriogram.featnames
-    segmenter = model.segmenter({"combined_signals": DEFAULT_COMBINED_SIGNALS})
+    segmenter = model.segmenter.with_hparams({"combined_signals": DEFAULT_COMBINED_SIGNALS})
     # The model's ipa-view vocabulary is exactly the TIMIT training phones; a
     # VoxAngeles phone is OOV iff it (or a component of it) is absent here.
     timit_vocab = {p for p in model.posteriogram.views["ipa"].featmap if p != "_"}
@@ -377,16 +379,18 @@ def main(argv=None):
     # Cache identity: model artifact + segmentation config + frame geometry. Any
     # change to these invalidates entries (the posteriogram/boundaries depend on
     # all of them); the audio path distinguishes utterances within a tag.
-    cache_tag = _model_tag(args.model) + "\x00" + json.dumps(
-        {"signals": DEFAULT_COMBINED_SIGNALS, "sr": sr, "frame_shift": frame_shift},
-        sort_keys=True,
+    cache_tag = (
+        _model_tag(args.model)
+        + "\x00"
+        + json.dumps(
+            {"signals": DEFAULT_COMBINED_SIGNALS, "sr": sr, "frame_shift": frame_shift},
+            sort_keys=True,
+        )
     )
     cache = InferenceCache(cache_dir, cache_tag)
 
     if not args.skip_timit:
-        timit_rec = Recognizer(
-            featnames=featnames, featmap=model.posteriogram.views["ipa"].featmap
-        )
+        timit_rec = Recognizer(featnames=featnames, featmap=model.posteriogram.views["ipa"].featmap)
         evaluate_timit(
             model,
             load_timit(args.timit_root, split="test"),

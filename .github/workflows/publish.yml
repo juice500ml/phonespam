@@ -6,86 +6,151 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      force:
+        description: >-
+          Force a release of this level even when no conventional commits
+          warrant one. Leave empty to let the commit history decide.
+        required: false
+        default: ''
+        type: choice
+        options: ['', 'patch', 'minor', 'major']
+
+# Never let two releases run at once: they would race on the tag and could
+# publish the same version twice.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Needed to create tags and releases
-      id-token: write  # OIDC for trusted publishing to PyPI
+      contents: write   # create the tag, the release, and push the release commit
+      id-token: write   # OIDC for trusted publishing to PyPI
 
     steps:
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-depth: 0  # semantic-release and setuptools-scm both need full history
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
 
-    - name: Install dependencies
+    # Determines the next version from the conventional-commit history,
+    # updates CHANGELOG.md, then commits, tags, pushes, and creates the
+    # GitHub release.
+    #
+    # `build: false` on purpose: this action runs inside its own Docker
+    # container (python:3.14-slim) that has only semantic-release installed,
+    # so `python -m build` would not resolve there. The artifacts are built
+    # on the runner below instead, against the tag this step just created --
+    # which is exactly what setuptools-scm reads.
+    #
+    # NOTE: this only fires for conventional commits (`feat:`, `fix:`, or a
+    # `!`/BREAKING CHANGE marker). A push of ordinary commit messages is a
+    # no-op; use the workflow_dispatch `force` input to cut a release anyway.
+    - name: Determine version and create release
+      id: release
+      uses: python-semantic-release/python-semantic-release@v10.6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        git_committer_name: "github-actions[bot]"
+        git_committer_email: "github-actions[bot]@users.noreply.github.com"
+        force: ${{ inputs.force }}
+        build: false
+        # No CHANGELOG.md in this repo; release notes live on the GitHub
+        # release. Without this, semantic-release recreates the file.
+        changelog: false
+
+    - name: Report decision
       run: |
-        python -m pip install --upgrade pip
-        pip install python-semantic-release[build] setuptools-scm
+        echo "released:         ${{ steps.release.outputs.released }}"
+        echo "version:          ${{ steps.release.outputs.version }}"
+        echo "tag:              ${{ steps.release.outputs.tag }}"
+        echo "previous version: ${{ steps.release.outputs.previous_version }}"
 
-    - name: Configure git
+    - name: Build sdist and wheel from the new tag
+      if: steps.release.outputs.released == 'true'
       run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-    - name: Run semantic release version
-      id: semantic_release
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        # Get the latest tag before running semantic-release
-        TAG_BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-
-        # Run semantic-release version - it will create a git tag if version bump is needed.
-        # Since we're using setuptools-scm, we don't need to update version files.
-        # Use --no-vcs-release to prevent creating release here (publish step handles it).
-        if semantic-release version --no-vcs-release; then
-          TAG_AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ "$TAG_AFTER" != "$TAG_BEFORE" ] && [ -n "$TAG_AFTER" ]; then
-            echo "no_release=false" >> $GITHUB_OUTPUT
-            echo "tag=$TAG_AFTER" >> $GITHUB_OUTPUT
-            echo "New version tag created: $TAG_AFTER"
-
-            git push origin "$TAG_AFTER" || echo "Tag may already exist on remote"
-
-            if git describe --exact-match --tags HEAD >/dev/null 2>&1; then
-              echo "Current commit is tagged: $TAG_AFTER"
-            else
-              echo "Warning: Current commit is not the tagged commit"
-            fi
-          else
-            echo "no_release=true" >> $GITHUB_OUTPUT
-            echo "No version bump needed (tag before: $TAG_BEFORE, tag after: $TAG_AFTER)"
-          fi
-        else
-          echo "no_release=true" >> $GITHUB_OUTPUT
-          echo "semantic-release version exited with error or no version bump needed"
-        fi
-
-    - name: Build package
-      if: steps.semantic_release.outputs.no_release != 'true'
-      run: |
-        rm -rf dist/ build/ *.egg-info phonological_posteriogram.egg-info
-        python -m pip install build
+        # The action created the tag in this same workspace, so setuptools-scm
+        # resolves the released version rather than a dev version.
+        git describe --tags --exact-match HEAD
+        python -m pip install --upgrade pip build twine
         python -m build
-        echo "Built files:"
-        ls -la dist/
+        ls -l dist/
 
-    - name: Create GitHub release
-      if: steps.semantic_release.outputs.no_release != 'true'
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
+    - name: Verify the built version matches the tag
+      # A mismatch means setuptools-scm resolved something other than the tag
+      # semantic-release just made. Publishing that would put a wrong version
+      # on PyPI permanently, and PyPI never lets a version be reused.
+      if: steps.release.outputs.released == 'true'
       run: |
-        semantic-release publish
+        expected="${{ steps.release.outputs.version }}"
+        if [ ! -f "dist/phonespam-$expected-py3-none-any.whl" ]; then
+          echo "::error::expected dist/phonespam-$expected-py3-none-any.whl, got:"
+          ls dist/
+          exit 1
+        fi
+        echo "dist matches version $expected"
 
+    - name: Check distribution metadata
+      if: steps.release.outputs.released == 'true'
+      run: twine check --strict dist/*
+
+    - name: Reject direct URL requirements
+      # Same guard as CI: PyPI refuses `name @ git+https://...` anywhere in
+      # published metadata. Checked again here because this is the upload that
+      # would actually fail, after the tag and GitHub release already exist.
+      if: steps.release.outputs.released == 'true'
+      run: |
+        python - <<'EOF'
+        import glob, zipfile
+        from packaging.requirements import InvalidRequirement, Requirement
+
+        whl = glob.glob("dist/*.whl")[0]
+        with zipfile.ZipFile(whl) as z:
+            name = next(n for n in z.namelist() if n.endswith("METADATA"))
+            meta = z.read(name).decode()
+        bad = []
+        for ln in meta.splitlines():
+            if not ln.startswith("Requires-Dist:"):
+                continue
+            spec = ln.split(":", 1)[1].strip()
+            try:
+                if Requirement(spec).url:
+                    bad.append(ln)
+            except InvalidRequirement as e:
+                bad.append(f"{ln}   <- unparseable: {e}")
+        if bad:
+            raise SystemExit(
+                "PyPI will reject these direct URL requirements:\n  " + "\n  ".join(bad)
+            )
+        print("no direct URL requirements")
+        EOF
+
+    # Attaches the artifacts in dist/ to the GitHub release created above.
+    - name: Publish GitHub release assets
+      if: steps.release.outputs.released == 'true'
+      uses: python-semantic-release/publish-action@v10.6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ steps.release.outputs.tag }}
+
+    # Trusted publishing (OIDC): no API token is stored anywhere. This
+    # requires a one-time setup on PyPI before the first release --
+    # https://pypi.org/manage/account/publishing/ -- registering a pending
+    # publisher with exactly:
+    #   PyPI project name: phonespam
+    #   Owner:             juice500ml
+    #   Repository name:   phonespam
+    #   Workflow name:     publish.yml
+    #   Environment name:  (leave blank)
+    # Without it this step fails with "invalid-publisher".
     - name: Publish to PyPI
-      if: steps.semantic_release.outputs.no_release != 'true'
+      if: steps.release.outputs.released == 'true'
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: dist/

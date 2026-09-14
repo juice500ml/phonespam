@@ -39,7 +39,7 @@ train_one() {
   echo "=== ${repo_id} (model=${model}, layer=${layer}) ==="
 
   if [[ ! -f "$feats_pkl" ]]; then
-    python -m phonological_posteriogram.training.extract_features \
+    python -m phonespam.training.extract_features \
       --model "$model" \
       --dataset_csv "$DATASET_CSV" \
       --split train \
@@ -50,7 +50,7 @@ train_one() {
       --output_path "$feats_pkl"
   fi
 
-  python -m phonological_posteriogram.training.train \
+  python -m phonespam.training.train \
     --features_pkl "$feats_pkl" \
     --output_dir "$out_dir" \
     --push_to_hub "$repo_id" \

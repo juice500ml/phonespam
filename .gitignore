@@ -10,7 +10,7 @@ dist/
 *.egg
 
 # setuptools-scm
-phonological_posteriogram/_version.py
+phonespam/_version.py
 
 # Testing
 .pytest_cache/
@@ -23,6 +23,9 @@ htmlcov/
 venv/
 env/
 
+# Notebooks
+.ipynb_checkpoints/
+
 # Editor
 .idea/
 .vscode/
@@ -32,6 +35,6 @@ env/
 .DS_Store
 
 # data
-data/
+/data/
 feats/
 models/
