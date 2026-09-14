@@ -2,15 +2,14 @@
 
 :class:`Segmenter` carries only hyperparameters — no trained weights — so a
 new configuration is constructed in microseconds and different algorithm
-settings can be compared without refitting the posteriogram. A future
-``Recognizer`` will follow the same shape (constructed over the same
-:class:`~phonological_posteriogram.posteriogram.PhonologicalPosteriogram`).
+settings can be compared without refitting the posteriogram.
 """
 
 from __future__ import annotations
 
 import contextlib
 import warnings
+from fractions import Fraction
 
 import numpy as np
 import torch
@@ -84,15 +83,33 @@ def _mel_svf(mel_frames, left, right, distance="cosine"):
     return signal
 
 
+# Stride of every wav2vec2-family S3M encoder, in input samples.
+S3M_FRAME_SHIFT = 320
+
+
+def mel_frames_per_s3m_frame(sr, mel_frame_shift_ms):
+    """Number of mel frames per S3M frame; raises unless it is a whole number.
+
+    At 16 kHz an S3M frame is 20 ms, so with the default 10 ms mel hop this is 2.
+    """
+    ratio = Fraction(S3M_FRAME_SHIFT * 1000, int(sr)) / Fraction(mel_frame_shift_ms)
+    if ratio.denominator != 1:
+        raise ValueError(
+            f"S3M frame shift ({S3M_FRAME_SHIFT} samples at sr={sr}) is not a whole "
+            f"multiple of mel_frame_shift_ms={mel_frame_shift_ms}; the mel_svf signal "
+            "can't be aligned to S3M frames."
+        )
+    return ratio.numerator
+
+
 def _mel_svf_signal(audio, left, right, target_len, *, sr, mel_frame_shift_ms, distance="cosine"):
     mel = _melspec_kaldi(audio, sr=sr, frame_shift_ms=mel_frame_shift_ms)
     sig = _mel_svf(mel, left=left, right=right, distance=distance)
     out = np.full(target_len, np.nan, dtype=np.float32)
     if len(sig) == 0 or target_len == 0:
         return out
-    # Mel frames run at half the S3M frame shift (10ms vs 20ms), so S3M frame t
-    # is exactly mel frame 2t: take every other mel frame.
-    sig = sig[::2]
+    # S3M frame t is mel frame step*t (e.g. step=2 for 20 ms S3M / 10 ms mel).
+    sig = sig[:: mel_frames_per_s3m_frame(sr, mel_frame_shift_ms)]
     n = min(len(sig), target_len)
     out[:n] = sig[:n]
     return out
@@ -243,6 +260,7 @@ class Segmenter:
         # Merge onto defaults so a partial dict (or an artifact saved before
         # a new hparam was added) still yields a complete config.
         self.hparams = {**self.default_hparams(), **(hparams or {})}
+        mel_frames_per_s3m_frame(self.sr, self.hparams["mel_frame_shift_ms"])
         if (
             hparams is not None
             and "drop_closure_release" not in hparams

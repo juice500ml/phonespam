@@ -9,6 +9,9 @@ dist/
 *.egg-info/
 *.egg
 
+# uv lockfile (not committed)
+uv.lock
+
 # setuptools-scm
 phonological_posteriogram/_version.py
 
@@ -31,7 +34,11 @@ env/
 # OS
 .DS_Store
 
-# data
-data/
-feats/
-models/
+# data (anchored so phonological_posteriogram/data/ isn't ignored)
+/data/
+/feats/
+/models/
+
+# experiment outputs
+exp/
+.cache/

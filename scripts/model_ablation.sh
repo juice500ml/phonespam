@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Train PhoneModels across {wavlm, hubert, w2v2, xls-r} × {0,3,...,24} layers
-# and push each to juice500/<short>-<layer>-phonemodel (private).
+# Train PhoneModels across {wavlm, hubert, w2v2, xls-r} × {0,3,...,24} layers.
+# The wavlm/24 run matches the released juice500/wavlm-24-phonemodel.
 #
 # Per run:
 #   1) training/extract_features.py  → ${WORK_DIR}/<short>-<layer>.feats.pkl
 #   2) training/train.py              → ${WORK_DIR}/<short>-<layer>-phonemodel/model.pt
-#      with --push_to_hub --hub_private → juice500/<short>-<layer>-phonemodel
 #
 # Requirements:
-#   - DATASET_CSV: per-phone CSV from training/prepare_datasets.py.
-#   - `huggingface-cli login` for juice500.
+#   - DATASET_CSV: timit-raw.csv from training/prepare_datasets.py.
 #   - GPU recommended (DEVICE=cuda:0).
+#   - Optional: HF_ORG=<org> to also push each model (private) to <org>/<run
+#     name>; needs `huggingface-cli login`.
 
 set -euo pipefail
 
@@ -33,10 +33,13 @@ train_one() {
   local tag="${short}-${layer}-phonemodel"
   local feats_pkl="${WORK_DIR}/${short}-${layer}.feats.pkl"
   local out_dir="${WORK_DIR}/${tag}"
-  local repo_id="juice500/${tag}"
+  local push_args=()
+  if [[ -n "${HF_ORG:-}" ]]; then
+    push_args=(--push_to_hub "${HF_ORG}/${tag}" --hub_private)
+  fi
 
   echo
-  echo "=== ${repo_id} (model=${model}, layer=${layer}) ==="
+  echo "=== ${tag} (model=${model}, layer=${layer}) ==="
 
   if [[ ! -f "$feats_pkl" ]]; then
     python -m phonological_posteriogram.training.extract_features \
@@ -53,8 +56,7 @@ train_one() {
   python -m phonological_posteriogram.training.train \
     --features_pkl "$feats_pkl" \
     --output_dir "$out_dir" \
-    --push_to_hub "$repo_id" \
-    --hub_private
+    ${push_args[@]+"${push_args[@]}"}
 }
 
 for i in "${!MODELS[@]}"; do

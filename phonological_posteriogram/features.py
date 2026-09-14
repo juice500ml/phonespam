@@ -63,7 +63,10 @@ class SSLEncoder:
         )
         x = {k: t.to(self.device) for k, t in x.items()}
 
-        if self.encoder_layer == -1:
+        if self.encoder_layer in (-1, self.model.config.num_hidden_layers):
+            # Read the final layer from last_hidden_state: transformers 5 records
+            # hidden_states[-1] before the encoder's final LayerNorm (4.x recorded
+            # it after), so only last_hidden_state is consistent across versions.
             out = self.model(**x)
             feats = out.last_hidden_state
         else:

@@ -1,7 +1,7 @@
 """Training-time utilities for phonological-posteriogram models.
 
-Importing this submodule requires the optional `[train]` extra (praatio,
-panphon, tqdm). Pure inference users don't need it.
+Importing this submodule requires the optional `[train]` extra (phone-metrics,
+tqdm). Pure inference users don't need it.
 
 Submodules are imported lazily so that
 ``python -m phonological_posteriogram.training.<name>`` doesn't hit a

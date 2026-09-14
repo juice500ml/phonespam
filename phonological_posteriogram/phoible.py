@@ -32,9 +32,14 @@ def _phoible():
 
 
 def _inventory_dialect(series):
-    """An inventory's SpecificDialect; never borrowed from another inventory."""
-    specified = series.dropna()
-    return specified.iloc[0] if not specified.empty else series.iloc[0]
+    """An inventory's SpecificDialect, or None if it has none.
+
+    PHOIBLE writes a missing dialect as either an empty cell or the literal
+    string ``"NA"``; both count as missing. Never borrowed from another
+    inventory.
+    """
+    specified = series[series.notna() & (series != "NA")]
+    return specified.iloc[0] if not specified.empty else None
 
 
 @functools.cache
@@ -56,14 +61,15 @@ def inventory_id_for_language(lang: str) -> int:
             int(rid): _inventory_dialect(rsub["SpecificDialect"])
             for rid, rsub in rows.groupby("InventoryID")
         }
-        dialect_free = [i for i in inv_ids if pd.isna(dialect_per_id[i])]
+        dialect_free = [i for i in inv_ids if dialect_per_id[i] is None]
         chosen = dialect_free[0] if dialect_free else inv_ids[0]
         id_dialect_lines = ", ".join(f"{i}: {dialect_per_id[i]!r}" for i in inv_ids)
         warnings.warn(
             f"Phoible has {len(inv_ids)} inventories for {lang!r} "
             f"({id_dialect_lines}); picking {chosen} "
-            f"(dialect {dialect_per_id[chosen]!r}). Pass `phoible_id=...` "
-            f"to override. See https://phoible.org/languages/{glottocode}",
+            f"(dialect {dialect_per_id[chosen]!r}). Use "
+            f"`vocab_for_inventory(<InventoryID>)` to pick a different one. "
+            f"See https://phoible.org/languages/{glottocode}",
             stacklevel=2,
         )
         return chosen

@@ -12,7 +12,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
+    {name = "Shikhar Bharadwaj"},
     {name = "Kwanghee Choi", email = "juice500ml@gmail.com"},
+    {name = "Stephen McIntosh"},
 ]
 keywords = [
     "speech",
@@ -47,29 +49,23 @@ dependencies = [
     "huggingface-hub>=0.19",
     "librosa>=0.10",
     "panphon>=0.20",
-    "pyarrow>=24.0.0",
 ]
 
 [project.optional-dependencies]
 train = [
-    "phone-metrics",
-    "praatio>=6.0",
+    "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0",
     "tqdm>=4.64",
 ]
 dev = [
     "pytest>=7.0",
-    "ruff",
+    "ruff==0.16.7",
     "pre-commit",
-    "python-semantic-release[build]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/juice500ml/phonological-posteriogram"
-Repository = "https://github.com/juice500ml/phonological-posteriogram"
-Issues = "https://github.com/juice500ml/phonological-posteriogram/issues"
-
-[tool.uv.sources]
-phone-metrics = { path = "../phone-metrics", editable = true }
+Homepage = "https://github.com/juice500ml/spam"
+Repository = "https://github.com/juice500ml/spam"
+Issues = "https://github.com/juice500ml/spam/issues"
 
 [tool.setuptools]
 packages = ["phonological_posteriogram", "phonological_posteriogram.training"]
@@ -94,15 +90,3 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E501"]
-
-[tool.semantic_release]
-# Git tags are the single source of truth; setuptools-scm reads from them.
-version_variable = []
-build_command = "python -m build"
-dist_path = "dist"
-commit_author = "github-actions <github-actions@users.noreply.github.com>"
-upload_to_vcs_release = true
-upload_to_pypi = false
-hvcs = "github"
-tag_commit = true
-changelog_file = "CHANGELOG.md"

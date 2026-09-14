@@ -251,7 +251,9 @@ class Recognizer:
         ft = panphon.FeatureTable()
         panphon_names = ft.fts("a").names
         full_featnames = (
-            ["silence+"] + [f"{n}+" for n in panphon_names] + [f"{n}-" for n in panphon_names]
+            ["silence+"]
+            + [f"{n}+" for n in panphon_names]
+            + [f"{n}-" for n in panphon_names]
             + ["closure+", "closure-", "release+", "release-"]
         )
         name_to_full_idx = {n: i for i, n in enumerate(full_featnames)}
@@ -369,9 +371,7 @@ class Recognizer:
             0.0,
             end_t,
         )
-        centers = np.clip(
-            np.floor((bt[:-1] + bt[1:]) / 2 * sr / frame_shift).astype(int), 0, T - 1
-        )
+        centers = np.clip(np.floor((bt[:-1] + bt[1:]) / 2 * sr / frame_shift).astype(int), 0, T - 1)
         posteriogram = np.asarray(posteriogram)
         assert posteriogram.ndim == 2
         assert posteriogram.shape[1] == len(self._featnames)

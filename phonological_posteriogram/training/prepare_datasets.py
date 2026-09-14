@@ -5,7 +5,7 @@ Parsing of the distributed datasets (TIMIT ``.phn`` files, VoxAngeles
 standalone :mod:`phone_metrics` package, so this repository never reads those
 formats directly. This module is a thin adapter: it loads utterances via
 ``phone_metrics`` and flattens them into this repo's CSV schema, which the
-downstream steps (``extract_features``, ``evaluate``, ``tune``) read.
+``extract_features`` step reads.
 
 CSV columns:
 

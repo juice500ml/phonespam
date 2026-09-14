@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # Sample-efficiency ablations on wavlm-large, layer 24: fit on a fraction of
-# training utterances (audio_paths). Pushes each to
-# juice500/wavlm-24-efficiency-<1_N>-phonemodel (private).
+# training utterances (audio_paths). Writes each to
+# ${WORK_DIR}/wavlm-24-efficiency-<1_N>-phonemodel/model.pt.
 #
-# Variants:
-#   - 1_2  (50%)   - 1_4  (25%)   - 1_8  (12.5%)
-#   - 1_16 (6.25%) - 1_32 (3.125%)
+# Variants: 1_2, 1_4, ..., 1_1024 (1/N of the TIMIT training utterances).
 #
 # Reuses ${WORK_DIR}/wavlm-24.feats.pkl from model_ablation.sh if present.
 #
 # Requirements:
-#   - DATASET_CSV: per-phone CSV from training/prepare_datasets.py.
-#   - `huggingface-cli login` for juice500.
+#   - DATASET_CSV: timit-raw.csv from training/prepare_datasets.py.
 #   - GPU recommended (DEVICE=cuda:0).
+#   - Optional: HF_ORG=<org> to also push each model (private) to <org>/<run
+#     name>; needs `huggingface-cli login`.
 
 set -euo pipefail
 
@@ -43,16 +42,18 @@ train_fraction() {
   local label="$1" frac="$2"
   local tag="${SHORT}-${LAYER}-efficiency-${label}-phonemodel"
   local out_dir="${WORK_DIR}/${tag}"
-  local repo_id="juice500/${tag}"
+  local push_args=()
+  if [[ -n "${HF_ORG:-}" ]]; then
+    push_args=(--push_to_hub "${HF_ORG}/${tag}" --hub_private)
+  fi
 
   echo
-  echo "=== ${repo_id}  (audio_fraction=${frac}, seed=${SEED}) ==="
+  echo "=== ${tag}  (audio_fraction=${frac}, seed=${SEED}) ==="
 
   python -m phonological_posteriogram.training.train \
     --features_pkl "$FEATS_PKL" \
     --output_dir "$out_dir" \
-    --push_to_hub "$repo_id" \
-    --hub_private \
+    ${push_args[@]+"${push_args[@]}"} \
     --audio_fraction "$frac" \
     --seed "$SEED"
 }
@@ -62,6 +63,11 @@ train_fraction 1_4  0.25
 train_fraction 1_8  0.125
 train_fraction 1_16 0.0625
 train_fraction 1_32 0.03125
+train_fraction 1_64 0.015625
+train_fraction 1_128 0.0078125
+train_fraction 1_256 0.00390625
+train_fraction 1_512 0.001953125
+train_fraction 1_1024 0.0009765625
 
 echo
-echo "efficiency_ablation: 5 runs completed."
+echo "efficiency_ablation: 10 runs completed."

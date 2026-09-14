@@ -6,8 +6,9 @@ A :class:`PhoneModel` bundles an SSL speech encoder with a fitted
 embedded :class:`~phonological_posteriogram.recognizer.Recognizer`. Load a
 model with :meth:`from_pretrained`, then drive the pieces directly:
 :meth:`load_audio` / :meth:`extract_features`, the shared
-:attr:`posteriogram`, and :meth:`segmenter` (a cheap factory that builds a
-fresh :class:`~phonological_posteriogram.segmenter.Segmenter` over the shared
+:attr:`posteriogram`, :meth:`segment` / :meth:`recognize`, and
+:meth:`segmenter` (a cheap factory that builds a fresh
+:class:`~phonological_posteriogram.segmenter.Segmenter` over the shared
 posteriogram, e.g. for hparam sweeps).
 
 A saved model is a single artifact file (``torch.save``'d dict)::
@@ -112,7 +113,6 @@ class PhoneModel:
         save_directory: str | os.PathLike,
         *,
         filename: str = DEFAULT_ARTIFACT_FILENAME,
-        tune_metrics: dict | None = None,
     ) -> Path:
         """Save the model artifact to a directory (HF Hub-compatible layout)."""
         save_directory = Path(save_directory)
@@ -121,7 +121,6 @@ class PhoneModel:
             "posteriogram": self.posteriogram.to_state(),
             "hparams": dict(self.hparams),
             "net": dict(self.net_spec),
-            "tune_metrics": tune_metrics,
         }
         out = save_directory / filename
         torch.save(artifact, out)
@@ -134,7 +133,6 @@ class PhoneModel:
         filename: str = DEFAULT_ARTIFACT_FILENAME,
         private: bool = False,
         commit_message: str | None = None,
-        tune_metrics: dict | None = None,
         token: str | None = None,
     ) -> str:
         """Save the artifact and push it to a HuggingFace Hub model repo.
@@ -148,7 +146,6 @@ class PhoneModel:
             filename: Artifact filename inside the repo (default ``model.pt``).
             private: When the repo is created on this push, mark it private.
             commit_message: Override the auto commit message.
-            tune_metrics: Optional sweep metrics dict to record in the artifact.
             token: Override the HF auth token (default uses the cached login).
         """
         import tempfile
@@ -164,7 +161,7 @@ class PhoneModel:
         )
         api = HfApi(token=token)
         with tempfile.TemporaryDirectory() as td:
-            self.save_pretrained(td, filename=filename, tune_metrics=tune_metrics)
+            self.save_pretrained(td, filename=filename)
             api.upload_folder(
                 folder_path=td,
                 repo_id=repo_id,
@@ -212,6 +209,30 @@ class PhoneModel:
     def extract_features(self, waveform: np.ndarray) -> np.ndarray:
         """Run the SSL encoder and return per-frame features."""
         return self.encoder(np.asarray(waveform, dtype=np.float32))
+
+    def segment(self, features: np.ndarray, waveform: np.ndarray) -> np.ndarray:
+        """Phone boundaries as frame indices, using the model's default hparams.
+
+        Use :meth:`segmenter` instead to override hparams.
+        """
+        return self.segmenter().segment(features, waveform)
+
+    def recognize(self, posteriogram, boundaries, *, vocab=None) -> list[str]:
+        """Label each segment defined by ``boundaries``.
+
+        ``boundaries`` are frame indices, as returned by
+        :meth:`segment`; the model's sample rate and encoder stride
+        are filled in. Returns one label per segment (``len(boundaries) + 1``).
+        ``vocab`` optionally restricts the output phones (see
+        :meth:`Recognizer.recognize`).
+        """
+        return self.recognizer.recognize(
+            posteriogram,
+            self.encoder.frame_to_time(boundaries),
+            sr=self.net_spec["sr"],
+            frame_shift=self.encoder.stride_size,
+            vocab=vocab,
+        )
 
 
 def _resolve_artifact_path(
