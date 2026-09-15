@@ -5,7 +5,7 @@ Parsing of the distributed datasets (TIMIT ``.phn`` files, VoxAngeles
 standalone :mod:`phone_metrics` package, so this repository never reads those
 formats directly. This module is a thin adapter: it loads utterances via
 ``phone_metrics`` and flattens them into this repo's CSV schema, which the
-downstream steps (``extract_features``, ``evaluate``, ``tune``) read.
+``extract_features`` step reads.
 
 CSV columns:
 
@@ -33,7 +33,7 @@ try:
     from phone_metrics import load_timit, load_voxangeles
 except ImportError as e:  # pragma: no cover - depends on the environment
     raise ImportError(
-        "phone-metrics is required for dataset preparation, but it is not on PyPI. Install it with:\n    pip install 'phone-metrics @ git+https://github.com/stephenmac7/phone-metrics.git'\nor, with uv, `uv sync --group train`."
+        "phone-metrics is required for dataset preparation, but it is not on PyPI. Install it with:\n    pip install 'phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0'\nor, with uv, `uv sync --group train`."
     ) from e
 
 # The two TIMIT closure-handling variants emitted side by side.

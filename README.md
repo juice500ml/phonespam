@@ -1,176 +1,155 @@
-# phonespam
+# SPAM
 
-> [**Phone Segmentation and Recognition through Phonological Activation Mapping**](https://arxiv.org/abs/2607.09020)
-> Shikhar Bharadwaj*, Kwanghee Choi*, Stephen McIntosh*, Chin-Jou Li, Eunjung Yeo,
-> Daisuke Saito, Nobuaki Minematsu, Shinji Watanabe, Jian Zhu, David Harwath, David R. Mortensen.
-> Accepted at **SLT 2026**. [arXiv:2607.09020](https://arxiv.org/abs/2607.09020)
+Code for **Phone Segmentation and Recognition through Phonological Activation
+Mapping** (SLT 2026).
 
-## Install
+Pretrained model: [`juice500/wavlm-24-phonemodel`](https://huggingface.co/juice500/wavlm-24-phonemodel)
+(WavLM-large, layer 24, fit on the TIMIT training set)
 
-Inference only — load a pretrained model and run it on audio:
+## Installation
+
+Requires Python 3.10+.
+
+For inference:
 
 ```bash
 pip install phonespam
 ```
 
-Training extras — adds dataset preparation (TIMIT, VoxAngeles) and SSL
-feature dumping. Training itself only requires running SSL inference, dumping
-features, and fitting on them (similar in spirit to k-means clustering on SSL
-features):
+To train or evaluate, clone the repo and install the `train` extra:
 
 ```bash
-pip install "phonespam[train]"
+git clone https://github.com/juice500ml/phonespam.git
+cd phonespam
+uv venv && uv pip install -e ".[train]" && uv sync --group train
+# or: python -m venv .venv && source .venv/bin/activate && pip install -e ".[train]"
 ```
 
-Dataset preparation (`phonespam.training.prepare_datasets`) and metric
-evaluation (`scripts/evaluate_metrics.py`) additionally need
-[phone-metrics](https://github.com/stephenmac7/phone-metrics), which is not
-published on PyPI and so cannot be named as an extra:
+Dataset preparation and evaluation also need
+[`phone-metrics`](https://github.com/stephenmac7/phone-metrics). It is not on
+PyPI, and PyPI rejects direct URL requirements in published metadata, so it
+cannot be named in the `train` extra. `uv sync --group train` installs it; with
+plain pip:
 
 ```bash
-pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics.git"
+pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
 ```
-
-With `uv`, `uv sync --group train` pulls it in automatically.
 
 ## Usage
 
 ```python
-from phonespam import PhoneModel
+from phonespam import PhoneModel, vocab_for_language
 
-model = PhoneModel.from_pretrained("juice500/wavlm-24-phonemodel")
+model = PhoneModel.from_pretrained("juice500/wavlm-24-phonemodel")  # device="cuda" for GPU
 
-for seg in model.transcribe("utt.wav"):
+for seg in model.transcribe("utt.wav", vocab=vocab_for_language("eng")):
     print(f"{seg.start:.2f}-{seg.end:.2f}  {seg.label}")
 ```
 
-`transcribe` runs the whole pipeline — load audio, encode, project, segment,
-label — and returns contiguous `Segment(start, end, label)` tuples with times
-in seconds. Constrain the output to one language's phone inventory with
-`vocab=`, or override segmenter hyperparameters for a single call:
+`transcribe` runs the whole pipeline and returns contiguous
+`Segment(start, end, label)` tuples with times in seconds. `vocab` is optional:
+without it any PanPhon phone can be predicted; with it, output is restricted to
+that inventory. To drive the stages yourself:
 
 ```python
-from phonespam import vocab_for_language
+from phonespam import PhoneModel, vocab_for_language
 
-segs = model.transcribe("utt.wav", vocab=vocab_for_language("deu"))
-segs = model.transcribe("utt.wav", hparam_overrides={"combined_prominence": 0.005})
+model = PhoneModel.from_pretrained("juice500/wavlm-24-phonemodel")
+
+wav = model.load_audio("utt.wav")  # mono float32, resampled to the model's rate
+feats = model.extract_features(wav)  # (T, D) S3M features
+
+# Phonological activation map (SPAM), shape (T, n_features). Carries its own
+# feature names and frame times: spam.featnames, spam.times,
+# spam.select([...]), spam.to_frame(). np.asarray(spam) gives the raw matrix.
+post = model.spam_from_features(feats)  # or model.spam("utt.wav")
+
+# Segmentation: boundaries between phones, as frame indices.
+boundaries = model.segment(feats, wav)
+times = model.encoder.frame_to_time(boundaries)  # in seconds
+
+# Recognition: one label per segment, len(boundaries) + 1 ("_" is silence).
+# recognize() takes frame indices and converts them for you.
+phones = model.recognize(post, boundaries, vocab=vocab_for_language("eng"))
 ```
 
-If you only need boundaries, `model.boundaries("utt.wav")` returns them as
-times in seconds.
+## Training and evaluation
 
-## The activation map
+### Data
 
-`model.spam(...)` returns the SPAM itself — the intermediate the segmenter and
-recognizer both consume, one row per encoder frame and one column per
-phonological feature:
+- **TIMIT** is distributed by the LDC ([LDC93S1](https://catalog.ldc.upenn.edu/LDC93S1)).
+  Place the root of the official distribution at `data/TIMIT`.
+- **VoxAngeles** (evaluation only):
 
-```python
-spam = model.spam("utt.wav")  # normalized to [0, 1]
-spam = model.spam("utt.wav", act="none")  # raw projections, unbounded
+  ```bash
+  git clone --branch main --depth 1 https://github.com/pacscilab/voxangeles.git data/voxangeles
+  (cd data/voxangeles/data/audited_aligned && for f in *.zip; do unzip -o "$f"; done)
+  ```
 
-spam.shape  # (n_frames, n_features)
-spam.featnames  # ("silence+", "cons+", "cons-", ...)
-spam.times  # frame start times in seconds
+### Train the released model
+
+```bash
+# 1. Per-phone CSVs. Training uses timit-raw.csv, which keeps stop closures.
+python -m phonespam.training.prepare_datasets \
+    --dataset_type timit --dataset_path data/TIMIT --output_dir data/csv
+
+# 2. Per-phone S3M features for the training split.
+python -m phonespam.training.extract_features \
+    --model microsoft/wavlm-large --layer_index 24 --pool center --sr 16000 \
+    --dataset_csv data/csv/timit-raw.csv --split train \
+    --device cuda:0 --output_path exp/wavlm-24.feats.pkl
+
+# 3. Fit the phonological vectors and save exp/wavlm-24-phonemodel/model.pt.
+python -m phonespam.training.train \
+    --features_pkl exp/wavlm-24.feats.pkl --output_dir exp/wavlm-24-phonemodel
 ```
 
-It carries its feature names and frame times, so picking channels out for a
-plot doesn't mean looking up column positions:
+### Evaluate
 
-```python
-heat = spam.select(["silence+", "hi+", "hi-", "strid+", "strid-"])
-plt.imshow(np.asarray(heat).T, aspect="auto", vmin=0, vmax=1)
-
-spam.to_frame()  # pandas DataFrame indexed by time
+```bash
+python scripts/evaluate_metrics.py --model exp/wavlm-24-phonemodel \
+    --timit_root data/TIMIT --vox_root data/voxangeles
 ```
 
-`np.asarray(spam)` gives the bare matrix back, and a `Spam` can be passed
-straight to `Recognizer.recognize`. If you want both the map and a
-transcription of the same audio, extract features once and reuse them:
+`--model` also accepts a Hub id such as `juice500/wavlm-24-phonemodel`. For
+TIMIT test and VoxAngeles, the script reports boundary R-value (20 ms, strict)
+and PER/TER/PFER with both ground-truth ("oracle") and predicted ("pipeline")
+segmentation. On VoxAngeles, oracle PFER is also split into phones seen and
+unseen in TIMIT. Set `CACHE_DIR=.cache/eval` to cache per-utterance inference
+across runs.
 
-```python
-feats = model.extract_features(model.load_audio("utt.wav"))
-spam = model.spam_from_features(feats)
+## Development
+
+```bash
+uv pip install -e ".[train,dev]"
+pre-commit install
+pytest
 ```
-
-### Driving the stages directly
-
-The stages stay available for research use. If you wire them yourself, two
-conventions are easy to miss, and both fail *silently* — the output keeps the
-right shape and only the values are wrong:
-
-- `Segmenter.segment` returns **frame indices**, while `Recognizer.recognize`
-  takes **times in seconds**. Convert with `model.encoder.frame_to_time(...)`.
-- `Recognizer.recognize` scores a **sigmoid** posteriogram, but
-  `project` defaults to `act="none"`.
-
-`recognize` warns when it detects either mistake, but `transcribe` is the way
-to avoid them.
-
-```python
-wav = model.load_audio("utt.wav")
-feats = model.extract_features(wav)
-
-# Per-frame posteriogram, shape (T, n_features).
-# Columns are named by model.posteriogram.featnames.
-post = model.posteriogram.project(feats, view="ipa", act="sigmoid")
-
-frames = model.segmenter.segment(feats, wav)  # frame indices
-times = model.encoder.frame_to_time(frames)  # seconds
-labels = model.recognizer.recognize(post, times, sr=model.sr, frame_shift=model.frame_shift)
-```
-
-The encoder is lazy-loaded on first use, so `from_pretrained` is cheap if you
-only want to inspect or re-save the artifact.
-
-## Phone inventories (PHOIBLE)
-
-`vocab_for_language` resolves a language name, ISO 639-3 code, or Glottocode
-to that language's phone inventory, for use as `transcribe(..., vocab=...)`:
-
-```python
-from phonespam import vocab_for_language, vocab_for_inventory
-
-vocab = vocab_for_language("eng")  # or "deu", "stan1293", "German", ...
-segs = model.transcribe("utt.wav", vocab=vocab)
-
-# When a language maps to several PHOIBLE inventories, pick one explicitly:
-vocab = vocab_for_inventory(2252)  # English (RP)
-```
-
-The inventory table is a ~26 MB CSV and is **not** bundled in the wheel. It is
-downloaded once from a pinned, checksum-verified upstream commit and cached
-under `~/.cache/phonespam/` (or `$XDG_CACHE_HOME/phonespam`). Two environment
-variables control this:
-
-| Variable | Effect |
-| --- | --- |
-| `PHONESPAM_CACHE_DIR` | Relocate the download cache. |
-| `PHONESPAM_PHOIBLE_CSV` | Use this `phoible.csv` verbatim; nothing is downloaded. Use it on offline machines or to pin a different snapshot. |
-
-## Licensing
-
-phonespam itself is MIT (see `LICENSE`). The PHOIBLE inventory data it downloads
-at runtime is **not** — it is CC BY-SA 3.0 and must be attributed separately:
-
-> Moran, Steven & McCloy, Daniel (eds.) 2019. PHOIBLE 2.0. Jena: Max Planck
-> Institute for the Science of Human History. Available online at
-> <http://phoible.org>. DOI: 10.5281/zenodo.2626687
 
 ## Citation
 
 ```bibtex
-@inproceedings{bharadwaj2026spam,
+@inproceedings{spam2026,
   title     = {Phone Segmentation and Recognition through Phonological Activation Mapping},
-  author    = {Bharadwaj, Shikhar and Choi, Kwanghee and McIntosh, Stephen and
-               Li, Chin-Jou and Yeo, Eunjung and Saito, Daisuke and
-               Minematsu, Nobuaki and Watanabe, Shinji and Zhu, Jian and
-               Harwath, David and Mortensen, David R.},
-  booktitle = {IEEE Spoken Language Technology Workshop (SLT)},
-  year      = {2026},
-  eprint    = {2607.09020},
-  archivePrefix = {arXiv},
-  primaryClass  = {eess.AS},
-  url       = {https://arxiv.org/abs/2607.09020}
+  author    = {Bharadwaj, Shikhar and Choi, Kwanghee and McIntosh, Stephen and Li, Chin-Jou and
+               Yeo, Eunjung and Saito, Daisuke and Minematsu, Nobuaki and Watanabe, Shinji and
+               Zhu, Jian and Harwath, David and Mortensen, David R.},
+  booktitle = {Proc. IEEE Spoken Language Technology Workshop (SLT)},
+  year      = {2026}
 }
 ```
+
+## License
+
+The code is MIT-licensed. The phone inventory table it downloads at runtime is
+[PHOIBLE 2.0](https://phoible.org) data, licensed separately under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/):
+
+> Moran, Steven & McCloy, Daniel (eds.) 2019. PHOIBLE 2.0. Jena: Max Planck
+> Institute for the Science of Human History. DOI: 10.5281/zenodo.2626687
+
+The table is a ~26 MB CSV and is **not** bundled in the wheel. It is downloaded
+once from a pinned, checksum-verified upstream commit and cached under
+`~/.cache/phonespam/` (or `$XDG_CACHE_HOME/phonespam`). Set
+`PHONESPAM_CACHE_DIR` to relocate the cache, or `PHONESPAM_PHOIBLE_CSV` to use
+a copy you already have (and skip the download entirely).

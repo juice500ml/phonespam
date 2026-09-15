@@ -35,8 +35,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[train,dev]"
         # Not on PyPI, so it cannot be an extra; see pyproject [dependency-groups].
-        pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics.git"
-        pip install pre-commit
+        pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
 
     # The PHOIBLE table (~26 MB) is fetched on first use and pinned by commit,
     # so the cache key only changes when the pin in phonespam/phoible.py does.

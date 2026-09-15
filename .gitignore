@@ -9,6 +9,9 @@ dist/
 *.egg-info/
 *.egg
 
+# uv lockfile (not committed)
+uv.lock
+
 # setuptools-scm
 phonespam/_version.py
 
@@ -34,7 +37,11 @@ env/
 # OS
 .DS_Store
 
-# data
+# data (anchored so a package-level data/ dir would not be ignored)
 /data/
-feats/
-models/
+/feats/
+/models/
+
+# experiment outputs
+exp/
+.cache/

@@ -26,7 +26,7 @@ import pandas as pd
 
 from ..phone_model import PhoneModel
 from ..posteriogram import PhonologicalPosteriogram
-from ..segmenter import Segmenter
+from ..segmenter import Segmenter, mel_frames_per_s3m_frame
 
 REQUIRED_ATTRS = ("hf_repo", "encoder_layer", "sr")
 
@@ -67,7 +67,8 @@ def _get_args(argv=None):
         default=10,
         help=(
             "Mel-spectrogram hop in ms used by the mel_svf signal at "
-            "segmentation time. Stored in the artifact's hparams."
+            "segmentation time. Must evenly divide the S3M frame shift. "
+            "Stored in the artifact's hparams."
         ),
     )
     parser.add_argument(
@@ -128,6 +129,24 @@ def run(args):
             "Re-run training/extract_features.py to regenerate it."
         )
 
+    net_spec = {
+        "hf_repo": attrs["hf_repo"],
+        "encoder_layer": int(attrs["encoder_layer"]),
+        "sr": int(attrs["sr"]),
+    }
+    hparams = Segmenter.default_hparams()
+    hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
+    if args.hparams_overrides:
+        overrides = json.loads(args.hparams_overrides)
+        if not isinstance(overrides, dict):
+            raise ValueError(
+                f"--hparams_overrides must be a JSON object (dict), got {type(overrides).__name__}."
+            )
+        hparams.update(overrides)
+        print(f"Applied hparam overrides: {sorted(overrides)}")
+    # Fail before the expensive fit if the mel hop can't be aligned to S3M frames.
+    mel_frames_per_s3m_frame(net_spec["sr"], hparams["mel_frame_shift_ms"])
+
     if args.split != "both":
         if "split" not in df.columns:
             raise ValueError("--split was set but the features pickle has no `split` column.")
@@ -152,22 +171,6 @@ def run(args):
     # The expensive step: fit the weights-only PhonologicalPosteriogram on the
     # TIMIT closure/release label scheme from raw TIMIT features.
     posteriogram = PhonologicalPosteriogram.fit_timit_closure_release(df)
-
-    net_spec = {
-        "hf_repo": attrs["hf_repo"],
-        "encoder_layer": int(attrs["encoder_layer"]),
-        "sr": int(attrs["sr"]),
-    }
-    hparams = Segmenter.default_hparams()
-    hparams["mel_frame_shift_ms"] = int(args.mel_frame_shift_ms)
-    if args.hparams_overrides:
-        overrides = json.loads(args.hparams_overrides)
-        if not isinstance(overrides, dict):
-            raise ValueError(
-                f"--hparams_overrides must be a JSON object (dict), got {type(overrides).__name__}."
-            )
-        hparams.update(overrides)
-        print(f"Applied hparam overrides: {sorted(overrides)}")
 
     model = PhoneModel(posteriogram=posteriogram, net_spec=net_spec, hparams=hparams)
     out = model.save_pretrained(args.output_dir, filename=args.filename)

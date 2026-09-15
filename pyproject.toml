@@ -14,7 +14,9 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
+    {name = "Shikhar Bharadwaj"},
     {name = "Kwanghee Choi", email = "juice500ml@gmail.com"},
+    {name = "Stephen McIntosh"},
 ]
 keywords = [
     "speech",
@@ -60,14 +62,12 @@ dependencies = [
 # `phonespam.training.prepare_datasets` and `scripts/evaluate_metrics.py`
 # need it, and both fail with an install hint if it is missing.
 train = [
-    "praatio>=6.0",
     "tqdm>=4.64",
 ]
 dev = [
     "pytest>=7.0",
-    "ruff",
+    "ruff==0.16.7",
     "pre-commit",
-    "python-semantic-release[build]",
 ]
 
 # PEP 735 groups are development-only and never end up in the built
@@ -76,7 +76,7 @@ dev = [
 # (pip >= 25.1); otherwise install phone-metrics by hand, see the README.
 [dependency-groups]
 train = [
-    "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics.git",
+    "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0",
 ]
 
 [project.urls]
@@ -85,7 +85,7 @@ Repository = "https://github.com/juice500ml/phonespam"
 Issues = "https://github.com/juice500ml/phonespam/issues"
 
 [tool.uv.sources]
-phone-metrics = { git = "https://github.com/stephenmac7/phone-metrics.git" }
+phone-metrics = { git = "https://github.com/stephenmac7/phone-metrics.git", tag = "v0.1.0" }
 
 [tool.setuptools.packages.find]
 include = ["phonespam*"]

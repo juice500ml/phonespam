@@ -7,16 +7,16 @@ and never changes once trained:
 - the linear regressor ``W_bwd`` that maps raw SSL features onto the ``ipa``
   projection of the preceding phone.
 
-Algorithm classes (``Segmenter``, and later ``Recognizer``) are constructed
-on top of a fitted ``PhonologicalPosteriogram`` and carry only
-hyperparameters, so different configurations can be compared without
-refitting these weights.
+``Segmenter`` is constructed on top of a fitted ``PhonologicalPosteriogram``
+and carries only hyperparameters, so different configurations can be compared
+without refitting these weights.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import panphon
+from scipy.special import expit
 
 _CR_CLOSURE_TO_STOP = {
     "pcl": "p",
@@ -53,7 +53,7 @@ def _apply_activation(raw, act):
     if act == "none":
         return raw
     if act == "sigmoid":
-        return 1.0 / (1.0 + np.exp(-raw))
+        return expit(raw)
     raise ValueError(f"Unknown activation {act!r}; choose one of {ACTIVATIONS}.")
 
 

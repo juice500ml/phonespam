@@ -14,6 +14,9 @@ Note on input sample rate:
     of 20 ms. We always tell the HF processor ``sampling_rate ==
     processor.sampling_rate`` (its native 16 kHz) to skip its validation
     check, and record the *real* input sampling rate in ``df.attrs["sr"]``.
+    The S3M frame shift must be a whole number of milliseconds so that some
+    integer mel hop (``train.py --mel_frame_shift_ms``) divides it; rates like
+    48 kHz (6.67 ms) are rejected.
 """
 
 from __future__ import annotations
@@ -24,14 +27,11 @@ import sys
 from pathlib import Path
 
 import librosa
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from ..features import SSLEncoder
-
-# Internal stride of every wav2vec2-family SSL encoder, in input samples.
-SSL_FRAME_SHIFT = 320
+from ..segmenter import S3M_FRAME_SHIFT
 
 POOL_CHOICES = ("center", "average")
 
@@ -75,10 +75,17 @@ def _get_args(argv=None):
         default=16000,
         help=(
             "Input audio sample rate. The model still treats every 320 samples "
-            "as one frame, so e.g. sr=32000 gives 10 ms hops instead of 20 ms."
+            "as one frame, so e.g. sr=32000 gives 10 ms hops instead of 20 ms. "
+            "The frame shift must be a whole number of milliseconds."
         ),
     )
     args = parser.parse_args(argv)
+    if (S3M_FRAME_SHIFT * 1000) % args.sr:
+        parser.error(
+            f"--sr {args.sr}: the S3M frame shift ({S3M_FRAME_SHIFT} samples = "
+            f"{S3M_FRAME_SHIFT * 1000 / args.sr:.3g} ms) must be a whole number of "
+            "milliseconds so the segmenter's mel hop can divide it."
+        )
     print(args)
     return args
 
@@ -118,8 +125,6 @@ def _pool_feats(feat, pool):
 
 
 def run(args):
-    np.random.seed(42)
-
     df = pd.read_csv(args.dataset_csv)
     if args.split != "both":
         df = df[df.split == args.split]

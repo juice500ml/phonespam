@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Structural ablations of the boundary-signal stack on wavlm-large, layer 24.
-# Pushes each to juice500/wavlm-24-ablation-<name>-phonemodel (private).
+# Writes each to ${WORK_DIR}/wavlm-24-ablation-<name>-phonemodel/model.pt.
 #
 # Variants:
 #   - oneframedelta        : single frame_delta(offset=1).
@@ -10,9 +10,10 @@
 # Reuses ${WORK_DIR}/wavlm-24.feats.pkl from model_ablation.sh if present.
 #
 # Requirements:
-#   - DATASET_CSV: per-phone CSV from training/prepare_datasets.py.
-#   - `huggingface-cli login` for juice500.
+#   - DATASET_CSV: timit-raw.csv from training/prepare_datasets.py.
 #   - GPU recommended (DEVICE=cuda:0).
+#   - Optional: HF_ORG=<org> to also push each model (private) to <org>/<run
+#     name>; needs `huggingface-cli login`.
 
 set -euo pipefail
 
@@ -42,16 +43,18 @@ train_ablation() {
   local name="$1" overrides="$2"
   local tag="${SHORT}-${LAYER}-ablation-${name}-phonemodel"
   local out_dir="${WORK_DIR}/${tag}"
-  local repo_id="juice500/${tag}"
+  local push_args=()
+  if [[ -n "${HF_ORG:-}" ]]; then
+    push_args=(--push_to_hub "${HF_ORG}/${tag}" --hub_private)
+  fi
 
   echo
-  echo "=== ${repo_id} ==="
+  echo "=== ${tag} ==="
 
   python -m phonespam.training.train \
     --features_pkl "$FEATS_PKL" \
     --output_dir "$out_dir" \
-    --push_to_hub "$repo_id" \
-    --hub_private \
+    ${push_args[@]+"${push_args[@]}"} \
     --hparams_overrides "$overrides"
 }
 
