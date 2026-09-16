@@ -1,16 +1,20 @@
 name: Release and Publish
 
+# The version bump comes from the merged PR's label, not from commit messages:
+# squash-merging discards the individual commits, and a label is visible and
+# editable right up to the merge.
 on:
-  push:
-    branches:
-      - main
-      - master
+  pull_request:
+    # Only PRs into the release branches: merging into a feature branch must
+    # not cut a release.
+    branches: [main, master]
+    types: [closed]
   workflow_dispatch:
     inputs:
       force:
         description: >-
-          Force a release of this level even when no conventional commits
-          warrant one. Leave empty to let the commit history decide.
+          Release level for a manual run. Leave empty to let the commit
+          history decide.
         required: false
         default: ''
         type: choice
@@ -19,11 +23,19 @@ on:
 # Never let two releases run at once: they would race on the tag and could
 # publish the same version twice.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.pull_request.base.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
   release:
+    # Merged PRs only, and only from branches in this repository. A
+    # `pull_request` run for a fork gets a read-only GITHUB_TOKEN and no
+    # access to OIDC, so tagging and publishing could not work anyway --
+    # better to not start than to fail halfway through a release.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the tag, the release, and push the release commit
@@ -32,6 +44,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
+        # A pull_request run would otherwise check out refs/pull/N/merge in
+        # detached HEAD; semantic-release has to tag and push the base branch,
+        # which already contains the merge by the time this fires. Empty on a
+        # manual run, where checkout falls back to the triggering ref.
+        ref: ${{ github.event.pull_request.base.ref }}
         fetch-depth: 0  # semantic-release and setuptools-scm both need full history
 
     - name: Set up Python
@@ -39,19 +56,26 @@ jobs:
       with:
         python-version: '3.x'
 
-    # Determines the next version from the conventional-commit history,
-    # updates CHANGELOG.md, then commits, tags, pushes, and creates the
-    # GitHub release.
+    # Same rule as the `release label` required check, from the same script.
+    # That check already blocks merging without a label, so reaching this with
+    # none means the check was bypassed -- fail rather than guess a level.
+    - name: Resolve version bump from the PR label
+      id: bump
+      if: github.event_name == 'pull_request'
+      env:
+        LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        PR: ${{ github.event.pull_request.number }}
+      run: python3 .github/scripts/resolve_bump.py
+
+    # Applies the bump resolved above, then tags, pushes, and creates the
+    # GitHub release. On a manual run with no `force` input it falls back to
+    # reading the conventional-commit history.
     #
     # `build: false` on purpose: this action runs inside its own Docker
     # container (python:3.14-slim) that has only semantic-release installed,
     # so `python -m build` would not resolve there. The artifacts are built
     # on the runner below instead, against the tag this step just created --
     # which is exactly what setuptools-scm reads.
-    #
-    # NOTE: this only fires for conventional commits (`feat:`, `fix:`, or a
-    # `!`/BREAKING CHANGE marker). A push of ordinary commit messages is a
-    # no-op; use the workflow_dispatch `force` input to cut a release anyway.
     - name: Determine version and create release
       id: release
       uses: python-semantic-release/python-semantic-release@v10.6.2
@@ -59,7 +83,7 @@ jobs:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         git_committer_name: "github-actions[bot]"
         git_committer_email: "github-actions[bot]@users.noreply.github.com"
-        force: ${{ inputs.force }}
+        force: ${{ steps.bump.outputs.force || inputs.force }}
         build: false
         # No CHANGELOG.md in this repo; release notes live on the GitHub
         # release. Without this, semantic-release recreates the file.
