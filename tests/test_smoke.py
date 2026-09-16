@@ -920,3 +920,40 @@ def test_spam_from_features_skips_the_encoder(monkeypatch):
     monkeypatch.setattr(model, "extract_features", boom)
     spam = model.spam_from_features(np.zeros((50, 4), dtype=np.float32))
     assert spam.shape == (50, 3)
+
+
+def test_vocab_for_inventory_rejects_allophone_less_inventory():
+    """Some Phoible sources transcribe no allophones. Returning an empty vocab
+    there would silently constrain the recognizer to silence alone."""
+    from phonespam.phoible import vocab_for_inventory
+
+    df = _phoible_or_skip()
+    # Find an inventory whose Allophones column is entirely the "NA" sentinel.
+    bare = None
+    for inv, rows in df.groupby("InventoryID"):
+        if not any(str(a).strip() != "NA" for a in rows["Allophones"].dropna()):
+            bare = int(inv)
+            break
+    if bare is None:
+        pytest.skip("no allophone-less inventory in this snapshot")
+
+    with pytest.raises(ValueError, match="no Allophones data"):
+        vocab_for_inventory(bare)
+    # The phoneme inventory is the documented way through.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert len(vocab_for_inventory(bare, phoneme=True)) > 0
+
+
+def test_recognize_rejects_empty_vocab():
+    """An empty vocab would mask everything but silence and label every
+    segment "_" -- with the right shape and no error."""
+    rec = _make_recognizer()
+    rec._uses_fitted_featmap = True  # the branch that skipped validation
+    post = np.full((10, 3), 0.5, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="vocab is empty"):
+        rec.recognize(post, [0.1], sr=16000, frame_shift=320, vocab=())
+
+    # None still means "unconstrained".
+    assert len(rec.recognize(post, [0.1], sr=16000, frame_shift=320, vocab=None)) == 2

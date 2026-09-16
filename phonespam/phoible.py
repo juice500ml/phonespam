@@ -196,6 +196,18 @@ def vocab_for_inventory(phoible_id: int, *, phoneme: bool = False) -> tuple[str,
             phones_set.update(tok for tok in s.split() if tok != "NA")
         phones = sorted(phones_set)
 
+    if not phones:
+        # Not every Phoible source transcribes allophones; those inventories
+        # have a Phoneme column but an empty Allophones one. Returning an
+        # empty vocab here would constrain the recognizer to silence alone,
+        # so say what happened instead.
+        column = "Phoneme" if phoneme else "Allophones"
+        hint = "" if phoneme else " Pass `phoneme=True` to use its phoneme inventory instead."
+        raise ValueError(
+            f"Phoible InventoryID {phoible_id} has no {column} data, so it "
+            f"yields an empty vocab.{hint}"
+        )
+
     return _filter_panphon_known(tuple(phones), context=f"InventoryID {phoible_id}")
 
 

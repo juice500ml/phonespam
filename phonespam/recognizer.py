@@ -353,6 +353,13 @@ class Recognizer:
             phones = None
         elif self._uses_fitted_featmap:
             phones = tuple(vocab)
+            # An empty vocab is never a meaningful request: the mask would
+            # keep only silence and every segment would label as "_".
+            if not phones:
+                raise ValueError(
+                    "vocab is empty; pass None to leave the output unconstrained. "
+                    "An empty vocab would label every segment as silence."
+                )
         else:
             phones = _validate_vocab(tuple(vocab))
 
