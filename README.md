@@ -1,10 +1,14 @@
 # SPAM
+- SPAM means Self-supervised speech model-based Phonological Activation Mapping.
+- Paper accepted to SLT 2026: [Phone Segmentation and Recognition through Phonological Activation Mapping](https://arxiv.org/abs/2607.09020) (Shikhar Bharadwaj∗, Kwanghee Choi∗, Stephen McIntosh∗, Chin-Jou Li, Eunjung Yeo,
+Daisuke Saito, Nobuaki Minematsu, Shinji Watanabe, Jian Zhu, David Harwath and David R. Mortensen)
+- Phonological vector first came from [[b]=[d]-[t]+[p]: Self-supervised Speech Models Discover Phonological Vector Arithmetic](https://aclanthology.org/2026.findings-acl.537/), and SPAM first came from [Self-Supervised Speech Models Encode Phonetic Context via Position-dependent Orthogonal Subspaces](https://arxiv.org/abs/2603.12642) as a visualization tool.
 
-Code for **Phone Segmentation and Recognition through Phonological Activation
-Mapping** (SLT 2026).
-
-Pretrained model: [`juice500/wavlm-24-phonemodel`](https://huggingface.co/juice500/wavlm-24-phonemodel)
-(WavLM-large, layer 24, fit on the TIMIT training set)
+## Pretrained models
+- Best model so far: [`juice500/wavlm-24-phonemodel`](https://huggingface.co/juice500/wavlm-24-phonemodel) (WavLM-large, layer 24, fit on the TIMIT training set)
+- Different models and layers also available: Swap above with `model = wavlm/hubert/w2v2/xls-r`, `layer = 3/6/.../24`
+- Efficiency ablation (Figure 3 in the paper): `juice500/wavlm-24-efficiency-{EFF}-phonemodel` where `EFF=1_2/1_4/.../1_1024` (using 1/2, 1/4, ..., 1/1024 of TIMIT training set)
+- Segmentation ablation (Table 3 in the paper): `juice500/wavlm-24-ablation-oneframedelta-phonemodel`, `juice500/wavlm-24-ablation-stackframedelta-phonemodel`, `juice500/wavlm-24-ablation-stackframebwddelta-phonemodel`
 
 ## Installation
 
@@ -26,11 +30,8 @@ uv venv && uv pip install -e ".[train]" && uv sync --group train
 ```
 
 Dataset preparation and evaluation also need
-[`phone-metrics`](https://github.com/stephenmac7/phone-metrics). It is not on
-PyPI, and PyPI rejects direct URL requirements in published metadata, so it
-cannot be named in the `train` extra. `uv sync --group train` installs it; with
-plain pip:
-
+[`phone-metrics`](https://github.com/stephenmac7/phone-metrics).
+`uv sync --group train` installs it; with plain pip:
 ```bash
 pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
 ```
@@ -55,8 +56,7 @@ that inventory.
 
 `model.spam(...)` returns the SPAM itself — the intermediate both the segmenter
 and the recognizer consume, one row per encoder frame and one column per
-phonological feature. It carries its own feature names and frame times, so
-pulling channels out for a plot doesn't mean tracking column positions:
+phonological feature.
 
 ```python
 spam = model.spam("utt.wav")  # normalized to [0, 1]
@@ -70,9 +70,7 @@ plt.imshow(np.asarray(heat).T, aspect="auto", vmin=0, vmax=1)
 spam.to_frame()  # pandas DataFrame indexed by time
 ```
 
-`np.asarray(spam)` gives the bare matrix, and a `Spam` can be passed straight to
-`model.recognize`. Pass `act="none"` for the raw, unbounded projections instead
-of the sigmoid-normalized ones.
+`np.asarray(spam)` gives the bare matrix, and a `Spam` can be passed straight to `model.recognize`. Pass `act="none"` for the raw, unbounded projections instead of the sigmoid-normalized ones.
 
 ### Segmentation only
 
@@ -83,10 +81,30 @@ model.boundary_times("utt.wav")  # array of boundary times in seconds
 `model.segment(features, waveform)` is the lower-level call: it takes features
 you already have and returns **frame indices** rather than seconds.
 
+### Driving the stages yourself
+```python
+wav = model.load_audio("utt.wav")  # mono float32, resampled to the model's rate
+feats = model.extract_features(wav)  # (T, D) S3M features — one encoder pass
+spam = model.spam_from_features(feats)  # reuses feats, no second pass
+
+boundaries = model.segment(feats, wav)  # frame indices
+times = model.encoder.frame_to_time(boundaries)  # seconds
+phones = model.recognize(spam, boundaries, vocab=vocab_for_language("eng"))
+
+model.sr, model.frame_shift  # 16000, 320 — one frame is frame_shift/sr seconds
+```
+
+### Saving and sharing a model
+
+```python
+model.to("cuda")
+model.save_pretrained("exp/my-phonemodel")  # writes model.pt
+model.push_to_hub("me/my-phonemodel", private=True)  # needs `huggingface-cli login`
+```
+
 ### Constraining the phone inventory
 
-`vocab_for_language` resolves a language name, ISO 639-3 code, or Glottocode to
-that language's PHOIBLE inventory:
+`vocab_for_language` resolves a language name, ISO 639-3 code, or Glottocode to that language's PHOIBLE inventory:
 
 ```python
 from phonespam import vocab_for_inventory, vocab_for_language
@@ -127,58 +145,6 @@ tuned = model.segmenter.with_hparams({"distance": "l2"})
 boundaries = tuned.segment(feats, wav)  # frame indices
 ```
 
-### Driving the stages yourself
-
-Two conventions are easy to miss here, and both fail *silently* — the output
-keeps the right shape and only the values are wrong. `transcribe` exists to
-encapsulate them, and `recognize` warns if it detects either:
-
-- `Segmenter.segment` returns **frame indices**; `Recognizer.recognize` takes
-  **times in seconds**. `PhoneModel.segment`/`recognize` handle the conversion.
-- The recognizer scores a **sigmoid** posteriogram, but
-  `PhonologicalPosteriogram.project` defaults to `act="none"`.
-
-```python
-wav = model.load_audio("utt.wav")  # mono float32, resampled to the model's rate
-feats = model.extract_features(wav)  # (T, D) S3M features — one encoder pass
-spam = model.spam_from_features(feats)  # reuses feats, no second pass
-
-boundaries = model.segment(feats, wav)  # frame indices
-times = model.encoder.frame_to_time(boundaries)  # seconds
-phones = model.recognize(spam, boundaries, vocab=vocab_for_language("eng"))
-
-model.sr, model.frame_shift  # 16000, 320 — one frame is frame_shift/sr seconds
-```
-
-`scripts/demo_LDC93S1.py` is a worked example: it runs one utterance four ways
-(reference, per-frame, reference-boundaries, full pipeline) and plots them
-against the activation map.
-
-### Saving and sharing a model
-
-```python
-model.to("cuda")
-model.save_pretrained("exp/my-phonemodel")  # writes model.pt
-model.push_to_hub("me/my-phonemodel", private=True)  # needs `huggingface-cli login`
-```
-
-### Public API at a glance
-
-| | |
-| --- | --- |
-| `PhoneModel.from_pretrained(id_or_path, *, device=...)` | load from the Hub or disk |
-| `.transcribe(audio, *, vocab, hparam_overrides, snap_silence)` | → `list[Segment]`, times in seconds |
-| `.spam(audio, *, act)` / `.spam_from_features(features, *, act)` | → `Spam` activation map |
-| `.boundary_times(audio, ...)` / `.segment(features, waveform)` | boundaries in seconds / frame indices |
-| `.recognize(spam, boundaries, *, vocab)` | → one label per segment |
-| `.load_audio(path)` / `.extract_features(waveform)` | audio and S3M feature access |
-| `.encoder` / `.segmenter` / `.recognizer` | the underlying components (lazy, replaceable) |
-| `.sr` / `.frame_shift` / `.to(device)` | frame geometry and device |
-| `.save_pretrained(dir)` / `.push_to_hub(repo_id)` | persist or publish an artifact |
-| `Segment(start, end, label)` | one labelled segment, seconds |
-| `Spam.values/.featnames/.times`, `.select(names)`, `.to_frame()` | the activation map |
-| `vocab_for_language(lang)` / `vocab_for_inventory(id)` | PHOIBLE inventories as a `vocab` |
-| `Segmenter` / `Recognizer` / `PhonologicalPosteriogram` | the stages, usable standalone |
 
 ## Training and evaluation
 
