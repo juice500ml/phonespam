@@ -28,7 +28,7 @@ LAYER=24
 FEATS_PKL="${WORK_DIR}/${SHORT}-${LAYER}.feats.pkl"
 
 if [[ ! -f "$FEATS_PKL" ]]; then
-  python -m phonological_posteriogram.training.extract_features \
+  python -m phonespam.training.extract_features \
     --model "$MODEL" \
     --dataset_csv "$DATASET_CSV" \
     --split train \
@@ -51,7 +51,7 @@ train_ablation() {
   echo
   echo "=== ${tag} ==="
 
-  python -m phonological_posteriogram.training.train \
+  python -m phonespam.training.train \
     --features_pkl "$FEATS_PKL" \
     --output_dir "$out_dir" \
     ${push_args[@]+"${push_args[@]}"} \

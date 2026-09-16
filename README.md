@@ -10,40 +10,175 @@ Pretrained model: [`juice500/wavlm-24-phonemodel`](https://huggingface.co/juice5
 
 Requires Python 3.10+.
 
+For inference:
+
 ```bash
-git clone https://github.com/juice500ml/spam.git
-cd spam
-uv venv && uv pip install -e ".[train]"
+pip install phonespam
+```
+
+To train or evaluate, clone the repo and install the `train` extra:
+
+```bash
+git clone https://github.com/juice500ml/phonespam.git
+cd phonespam
+uv venv && uv pip install -e ".[train]" && uv sync --group train
 # or: python -m venv .venv && source .venv/bin/activate && pip install -e ".[train]"
 ```
 
-The `train` extra adds dataset preparation and evaluation (via
-`phone-metrics`). For inference only, install `.` without extras.
+Dataset preparation and evaluation also need
+[`phone-metrics`](https://github.com/stephenmac7/phone-metrics). It is not on
+PyPI, and PyPI rejects direct URL requirements in published metadata, so it
+cannot be named in the `train` extra. `uv sync --group train` installs it; with
+plain pip:
+
+```bash
+pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
+```
 
 ## Usage
 
 ```python
-from phonological_posteriogram import PhoneModel
-from phonological_posteriogram.phoible import vocab_for_language
+from phonespam import PhoneModel, vocab_for_language
 
 model = PhoneModel.from_pretrained("juice500/wavlm-24-phonemodel")  # device="cuda" for GPU
 
-wav = model.load_audio("utt.wav")  # mono float32, resampled to the model's rate
-feats = model.extract_features(wav)  # (T, D) S3M features
-
-# Phonological activation map, shape (T, n_features).
-# Columns are named by model.posteriogram.featnames.
-post = model.posteriogram.project(feats, view="ipa", act="sigmoid")
-
-# Segmentation: boundaries between phones, as frame indices.
-boundaries = model.segment(feats, wav)
-times = model.encoder.frame_to_time(boundaries)  # in seconds
-
-# Recognition: one label per segment ("_" is silence). `vocab` is optional:
-# without it any PanPhon phone can be predicted; with it, output is restricted
-# to that inventory (here, English from PHOIBLE).
-phones = model.recognize(post, boundaries, vocab=vocab_for_language("eng"))
+for seg in model.transcribe("utt.wav", vocab=vocab_for_language("eng")):
+    print(f"{seg.start:.2f}-{seg.end:.2f}  {seg.label}")
 ```
+
+`transcribe` runs the whole pipeline and returns contiguous
+`Segment(start, end, label)` tuples with times in seconds. `vocab` is optional:
+without it any PanPhon phone can be predicted; with it, output is restricted to
+that inventory.
+
+### The activation map
+
+`model.spam(...)` returns the SPAM itself — the intermediate both the segmenter
+and the recognizer consume, one row per encoder frame and one column per
+phonological feature. It carries its own feature names and frame times, so
+pulling channels out for a plot doesn't mean tracking column positions:
+
+```python
+spam = model.spam("utt.wav")  # normalized to [0, 1]
+spam.shape  # (n_frames, n_features)
+spam.featnames  # ("silence+", "syl+", "son+", ...)
+spam.times  # frame start times in seconds
+
+heat = spam.select(["silence+", "son+", "cons+", "strid+"])
+plt.imshow(np.asarray(heat).T, aspect="auto", vmin=0, vmax=1)
+
+spam.to_frame()  # pandas DataFrame indexed by time
+```
+
+`np.asarray(spam)` gives the bare matrix, and a `Spam` can be passed straight to
+`model.recognize`. Pass `act="none"` for the raw, unbounded projections instead
+of the sigmoid-normalized ones.
+
+### Segmentation only
+
+```python
+model.boundary_times("utt.wav")  # array of boundary times in seconds
+```
+
+`model.segment(features, waveform)` is the lower-level call: it takes features
+you already have and returns **frame indices** rather than seconds.
+
+### Constraining the phone inventory
+
+`vocab_for_language` resolves a language name, ISO 639-3 code, or Glottocode to
+that language's PHOIBLE inventory:
+
+```python
+from phonespam import vocab_for_inventory, vocab_for_language
+
+vocab = vocab_for_language("eng")  # or "deu", "stan1293", "German", ...
+segs = model.transcribe("utt.wav", vocab=vocab)
+
+# Some languages map to several PHOIBLE inventories; a warning names them all
+# and one is chosen. Pick explicitly to silence it:
+vocab = vocab_for_inventory(2175)  # Western/Mid-Western US English
+
+# By default these are the inventory's *allophones*. Not every PHOIBLE source
+# transcribes them; for those, ask for the phoneme inventory instead:
+vocab = vocab_for_inventory(2252, phoneme=True)  # English (RP)
+```
+
+The inventory table is downloaded on first use; see [License](#license) for
+where it is cached and how to point at your own copy.
+
+### Tuning the segmenter
+
+`hparam_overrides` merges onto the model's stored hyperparameters for a single
+call. `Segmenter.default_hparams()` lists them all:
+
+```python
+segs = model.transcribe("utt.wav", hparam_overrides={"combined_prominence": 0.005})
+segs = model.transcribe("utt.wav", snap_silence=False)
+```
+
+For a sweep, copy the segmenter instead — the copy shares the posteriogram
+weights, so nothing is refit:
+
+```python
+wav = model.load_audio("utt.wav")
+feats = model.extract_features(wav)
+
+tuned = model.segmenter.with_hparams({"distance": "l2"})
+boundaries = tuned.segment(feats, wav)  # frame indices
+```
+
+### Driving the stages yourself
+
+Two conventions are easy to miss here, and both fail *silently* — the output
+keeps the right shape and only the values are wrong. `transcribe` exists to
+encapsulate them, and `recognize` warns if it detects either:
+
+- `Segmenter.segment` returns **frame indices**; `Recognizer.recognize` takes
+  **times in seconds**. `PhoneModel.segment`/`recognize` handle the conversion.
+- The recognizer scores a **sigmoid** posteriogram, but
+  `PhonologicalPosteriogram.project` defaults to `act="none"`.
+
+```python
+wav = model.load_audio("utt.wav")  # mono float32, resampled to the model's rate
+feats = model.extract_features(wav)  # (T, D) S3M features — one encoder pass
+spam = model.spam_from_features(feats)  # reuses feats, no second pass
+
+boundaries = model.segment(feats, wav)  # frame indices
+times = model.encoder.frame_to_time(boundaries)  # seconds
+phones = model.recognize(spam, boundaries, vocab=vocab_for_language("eng"))
+
+model.sr, model.frame_shift  # 16000, 320 — one frame is frame_shift/sr seconds
+```
+
+`scripts/demo_LDC93S1.py` is a worked example: it runs one utterance four ways
+(reference, per-frame, reference-boundaries, full pipeline) and plots them
+against the activation map.
+
+### Saving and sharing a model
+
+```python
+model.to("cuda")
+model.save_pretrained("exp/my-phonemodel")  # writes model.pt
+model.push_to_hub("me/my-phonemodel", private=True)  # needs `huggingface-cli login`
+```
+
+### Public API at a glance
+
+| | |
+| --- | --- |
+| `PhoneModel.from_pretrained(id_or_path, *, device=...)` | load from the Hub or disk |
+| `.transcribe(audio, *, vocab, hparam_overrides, snap_silence)` | → `list[Segment]`, times in seconds |
+| `.spam(audio, *, act)` / `.spam_from_features(features, *, act)` | → `Spam` activation map |
+| `.boundary_times(audio, ...)` / `.segment(features, waveform)` | boundaries in seconds / frame indices |
+| `.recognize(spam, boundaries, *, vocab)` | → one label per segment |
+| `.load_audio(path)` / `.extract_features(waveform)` | audio and S3M feature access |
+| `.encoder` / `.segmenter` / `.recognizer` | the underlying components (lazy, replaceable) |
+| `.sr` / `.frame_shift` / `.to(device)` | frame geometry and device |
+| `.save_pretrained(dir)` / `.push_to_hub(repo_id)` | persist or publish an artifact |
+| `Segment(start, end, label)` | one labelled segment, seconds |
+| `Spam.values/.featnames/.times`, `.select(names)`, `.to_frame()` | the activation map |
+| `vocab_for_language(lang)` / `vocab_for_inventory(id)` | PHOIBLE inventories as a `vocab` |
+| `Segmenter` / `Recognizer` / `PhonologicalPosteriogram` | the stages, usable standalone |
 
 ## Training and evaluation
 
@@ -62,17 +197,17 @@ phones = model.recognize(post, boundaries, vocab=vocab_for_language("eng"))
 
 ```bash
 # 1. Per-phone CSVs. Training uses timit-raw.csv, which keeps stop closures.
-python -m phonological_posteriogram.training.prepare_datasets \
+python -m phonespam.training.prepare_datasets \
     --dataset_type timit --dataset_path data/TIMIT --output_dir data/csv
 
 # 2. Per-phone S3M features for the training split.
-python -m phonological_posteriogram.training.extract_features \
+python -m phonespam.training.extract_features \
     --model microsoft/wavlm-large --layer_index 24 --pool center --sr 16000 \
     --dataset_csv data/csv/timit-raw.csv --split train \
     --device cuda:0 --output_path exp/wavlm-24.feats.pkl
 
 # 3. Fit the phonological vectors and save exp/wavlm-24-phonemodel/model.pt.
-python -m phonological_posteriogram.training.train \
+python -m phonespam.training.train \
     --features_pkl exp/wavlm-24.feats.pkl --output_dir exp/wavlm-24-phonemodel
 ```
 
@@ -113,7 +248,15 @@ pytest
 
 ## License
 
-The code is MIT-licensed. `phonological_posteriogram/data/phoible.csv` is
+The code is MIT-licensed. The phone inventory table it downloads at runtime is
 [PHOIBLE 2.0](https://phoible.org) data, licensed separately under
-[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/); see
-`phonological_posteriogram/data/README.md`.
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/):
+
+> Moran, Steven & McCloy, Daniel (eds.) 2019. PHOIBLE 2.0. Jena: Max Planck
+> Institute for the Science of Human History. DOI: 10.5281/zenodo.2626687
+
+The table is a ~26 MB CSV and is **not** bundled in the wheel. It is downloaded
+once from a pinned, checksum-verified upstream commit and cached under
+`~/.cache/phonespam/` (or `$XDG_CACHE_HOME/phonespam`). Set
+`PHONESPAM_CACHE_DIR` to relocate the cache, or `PHONESPAM_PHOIBLE_CSV` to use
+a copy you already have (and skip the download entirely).

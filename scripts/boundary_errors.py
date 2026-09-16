@@ -41,12 +41,21 @@ from pathlib import Path
 import numpy as np
 import panphon
 from evaluate_metrics import DEFAULT_COMBINED_SIGNALS, InferenceCache, inference_cache_tag
-from phone_metrics import PrecisionRecallMetric, load_timit, load_voxangeles, tokenize_ipa
-from phone_metrics.timit import TIMIT_CLOSURE_OF, timit_segments
+
+try:
+    from phone_metrics import PrecisionRecallMetric, load_timit, load_voxangeles, tokenize_ipa
+    from phone_metrics.timit import TIMIT_CLOSURE_OF, timit_segments
+except ImportError as e:  # pragma: no cover - depends on the environment
+    raise ImportError(
+        "phone-metrics is required for boundary error analysis, but it is not on "
+        "PyPI. Install it with:\n    pip install 'phone-metrics @ "
+        "git+https://github.com/stephenmac7/phone-metrics@v0.1.0'\n"
+        "or, with uv, `uv sync --group train`."
+    ) from e
 from tqdm import tqdm
 
-from phonological_posteriogram.phone_model import PhoneModel
-from phonological_posteriogram.segmenter import S3M_FRAME_SHIFT
+from phonespam.phone_model import PhoneModel
+from phonespam.segmenter import S3M_FRAME_SHIFT
 
 TOLERANCE = 0.02  # boundary hit tolerance (s)
 _SILENCE = "_"

@@ -13,7 +13,7 @@ dist/
 uv.lock
 
 # setuptools-scm
-phonological_posteriogram/_version.py
+phonespam/_version.py
 
 # Testing
 .pytest_cache/
@@ -26,6 +26,17 @@ htmlcov/
 venv/
 env/
 
+# Notebooks
+.ipynb_checkpoints/
+Untitled*.ipynb
+
+# Local scratch: a symlink to a sibling checkout, an old sweep grid, and the
+# sample audio + figures under scripts/plots/. LDC93S1.* is LDC-licensed TIMIT
+# audio and must not be redistributed here.
+/envs
+/grid_old.json
+/scripts/plots/
+
 # Editor
 .idea/
 .vscode/
@@ -34,7 +45,7 @@ env/
 # OS
 .DS_Store
 
-# data (anchored so phonological_posteriogram/data/ isn't ignored)
+# data (anchored so a package-level data/ dir would not be ignored)
 /data/
 /feats/
 /models/

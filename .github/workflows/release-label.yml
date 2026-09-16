@@ -1,0 +1,33 @@
+name: Release label
+
+# Required check: a PR cannot be merged without a release label, so `main`
+# never advances without a corresponding version bump. `labeled`/`unlabeled`
+# are in the trigger list so that adding the label re-runs this and turns the
+# check green without needing a push.
+#
+# Make it enforcing in Settings -> Branches -> branch protection for `main`:
+# require status checks to pass, and select "release label".
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+concurrency:
+  group: release-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: release label
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        sparse-checkout: .github/scripts
+        sparse-checkout-cone-mode: false
+
+    - name: Require a major/minor/patch label
+      env:
+        LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        PR: ${{ github.event.pull_request.number }}
+      run: python3 .github/scripts/resolve_bump.py

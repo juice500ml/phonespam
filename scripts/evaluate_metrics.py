@@ -1,6 +1,6 @@
 """Evaluate phone-classification metrics from a library artifact.
 
-Loads a :class:`~phonological_posteriogram.phone_model.PhoneModel` (trained by
+Loads a :class:`~phonespam.phone_model.PhoneModel` (trained by
 ``training/train.py``), uses a fixed segmentation config, and reports, for both
 datasets, the boundary R-value and the **oracle** + **full-pipeline**
 phone-recognition metrics (PER, TER, PFER).
@@ -40,18 +40,24 @@ from pathlib import Path
 import numpy as np
 import panphon
 import panphon.distance
-from phone_metrics import (
-    PrecisionRecallMetric,
-    load_timit,
-    load_voxangeles,
-    oracle_phone_accuracy,
-    phone_error_rates,
-    tokenize_ipa,
-)
+
+try:
+    from phone_metrics import (
+        PrecisionRecallMetric,
+        load_timit,
+        load_voxangeles,
+        oracle_phone_accuracy,
+        phone_error_rates,
+        tokenize_ipa,
+    )
+except ImportError as e:  # pragma: no cover - depends on the environment
+    raise ImportError(
+        "phone-metrics is required for metric evaluation, but it is not on PyPI. Install it with:\n    pip install 'phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0'\nor, with uv, `uv sync --group train`."
+    ) from e
 from tqdm import tqdm
 
-from phonological_posteriogram.phone_model import PhoneModel
-from phonological_posteriogram.recognizer import Recognizer, panphon_featmap
+from phonespam.phone_model import PhoneModel
+from phonespam.recognizer import Recognizer, panphon_featmap
 
 # The default segmentation configuration (the library Segmenter's
 # DEFAULT_COMBINED_SIGNALS). Hardcoded so the script is self-contained and
@@ -392,11 +398,11 @@ def main(argv=None):
     cache_dir = os.environ.get("CACHE_DIR") or None
 
     model = PhoneModel.from_pretrained(args.model, device=args.device)
-    sr = model.net_spec["sr"]
-    frame_shift = model.encoder.stride_size
+    sr = model.sr
+    frame_shift = model.frame_shift
     featnames = model.posteriogram.featnames
     signals = model.hparams["combined_signals"] if args.model_signals else DEFAULT_COMBINED_SIGNALS
-    segmenter = model.segmenter({"combined_signals": signals})
+    segmenter = model.segmenter.with_hparams({"combined_signals": signals})
     # The model's ipa-view vocabulary is exactly the TIMIT training phones; a
     # VoxAngeles phone is OOV iff it (or a component of it) is absent here.
     timit_vocab = {p for p in model.posteriogram.views["ipa"].featmap if p != "_"}
