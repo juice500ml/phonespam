@@ -56,13 +56,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# PyPI rejects direct URL (`@ git+https://...`) requirements anywhere in
-# published metadata, extras included, so `phone-metrics` cannot live here.
-# It is declared in the `train` dependency group below instead; only
-# `phonespam.training.prepare_datasets` and `scripts/evaluate_metrics.py`
-# need it, and both fail with an install hint if it is missing.
 train = [
     "tqdm>=4.64",
+    "phone-metrics>=0.1",
 ]
 dev = [
     "pytest>=7.0",
@@ -70,22 +66,10 @@ dev = [
     "pre-commit",
 ]
 
-# PEP 735 groups are development-only and never end up in the built
-# wheel/sdist metadata, so a direct URL is legal here.
-# Install with `uv sync --group train` or `pip install --group train .`
-# (pip >= 25.1); otherwise install phone-metrics by hand, see the README.
-[dependency-groups]
-train = [
-    "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0",
-]
-
 [project.urls]
 Homepage = "https://github.com/juice500ml/phonespam"
 Repository = "https://github.com/juice500ml/phonespam"
 Issues = "https://github.com/juice500ml/phonespam/issues"
-
-[tool.uv.sources]
-phone-metrics = { git = "https://github.com/stephenmac7/phone-metrics.git", tag = "v0.1.0" }
 
 [tool.setuptools.packages.find]
 include = ["phonespam*"]
