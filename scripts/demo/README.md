@@ -15,24 +15,31 @@ Interactive demo for [Phone Segmentation and Recognition through Phonological
 Activation Mapping](https://arxiv.org/abs/2607.09020) (SLT 2026), running
 [`juice500/wavlm-24-phonemodel`](https://huggingface.co/juice500/wavlm-24-phonemodel).
 
-Give it the example utterance or record your own, and it draws four panels on a
+Give it the example utterance or record your own, and it draws five panels on a
 single time axis, with the predicted boundaries shared across all of them:
 
 1. **Spectrogram** — wideband, via [specplotter](https://github.com/juice500ml/specplotter).
-2. **SPAM** — all 43 phonological feature activations, normalized to `[0, 1]`.
-   This is the representation both heads read from.
+2. **SPAM** — all 43 phonological feature activations, normalized to `[0, 1]`,
+   with each feature's `+` and `-` channels adjacent. This is the
+   representation both heads read from.
 3. **Combined boundary signal** — the fuzzy-AND of the selected segmentation
    signals, with the peaks that became boundaries marked.
-4. **Phones** — the recognition head's label for each span.
+4. **Frame-wise labels** — the recognition head alone, one label per frame,
+   with no segmentation.
+5. **Phones** — both heads: one label per segment.
+
+Panels 4 and 5 are the paper's *Recog.-only* and *SPAM* rows: comparing them
+shows what the segmentation head contributes.
 
 Controls:
 
 - **Segmentation signals** — the released model's ensemble, grouped into the
   four families the paper ablates. Turning one off re-runs segmentation
   without it, so you can watch the boundary signal and the phones change.
-- **Phone inventory** — restrict recognition to one language's PHOIBLE
-  inventory. The model is fit on TIMIT, so the non-English options show its
-  cross-lingual behaviour.
+- **Phone inventory** — restrict recognition to any of PHOIBLE's ~2700
+  languages, listed as `Name (Glottocode)`. The model is fit on TIMIT, so the
+  other languages show its cross-lingual behaviour. Allophones are used where
+  a source transcribes them, its phonemes otherwise.
 - **Boundary sensitivity** — peak prominence required for a boundary. Lower
   finds more; the released model uses `0.001`.
 

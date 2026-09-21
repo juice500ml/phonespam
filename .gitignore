@@ -29,6 +29,7 @@ env/
 # Notebooks
 .ipynb_checkpoints/
 Untitled*.ipynb
+.gradio_tmp/
 
 # Local scratch: a symlink to a sibling checkout, an old sweep grid, and the
 # sample audio + figures under scripts/plots/. LDC93S1.* is LDC-licensed TIMIT
