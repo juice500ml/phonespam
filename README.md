@@ -114,8 +114,10 @@ vocab = vocab_for_inventory(2175)  # Western/Mid-Western US English
 vocab = vocab_for_inventory(2252, phoneme=True)  # English (RP)
 ```
 
-The inventory table is downloaded on first use; see [License](#license) for
-where it is cached and how to point at your own copy.
+The inventory table (~26 MB) is downloaded on first use and cached under
+`~/.cache/phonespam/`. Set `PHONESPAM_CACHE_DIR` to relocate that cache, or
+`PHONESPAM_PHOIBLE_CSV` to point at a copy you already have and skip the
+download entirely.
 
 ### Tuning the segmenter
 
@@ -140,6 +142,11 @@ boundaries = tuned.segment(feats, wav)  # frame indices
 
 
 ## Training and evaluation
+
+The steps below train the released model. [`scripts/`](scripts/) holds the
+rest of the paper reproduction — ablations, error analysis, and the figure
+notebooks — and is not part of the installed package; see
+[`scripts/README.md`](scripts/README.md).
 
 ### Data
 
@@ -207,15 +214,11 @@ pytest
 
 ## License
 
-The code is MIT-licensed. The phone inventory table it downloads at runtime is
+The code is MIT-licensed.
+
+The phone inventory table it downloads at runtime (for `vocab_for_language`) is
 [PHOIBLE 2.0](https://phoible.org) data, licensed separately under
 [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/):
 
 > Moran, Steven & McCloy, Daniel (eds.) 2019. PHOIBLE 2.0. Jena: Max Planck
 > Institute for the Science of Human History. DOI: 10.5281/zenodo.2626687
-
-The table is a ~26 MB CSV and is **not** bundled in the wheel. It is downloaded
-once from a pinned, checksum-verified upstream commit and cached under
-`~/.cache/phonespam/` (or `$XDG_CACHE_HOME/phonespam`). Set
-`PHONESPAM_CACHE_DIR` to relocate the cache, or `PHONESPAM_PHOIBLE_CSV` to use
-a copy you already have (and skip the download entirely).
