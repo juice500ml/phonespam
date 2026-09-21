@@ -100,7 +100,7 @@ LANGUAGES = _languages()
 print(f"ready ({len(LANGUAGES) - 1} languages).")
 
 
-def analyze(audio_path, signals, language, prominence):
+def analyze(audio_path, signals, language):
     """Run the model and draw the four aligned panels."""
     if not audio_path:
         raise gr.Error("Provide some audio: upload a file, record, or use the example.")
@@ -112,7 +112,7 @@ def analyze(audio_path, signals, language, prominence):
 
     specs = [spec for name in signals for spec in SIGNAL_GROUPS[name]]
     segmenter = MODEL.segmenter.with_hparams(
-        {"combined_signals": specs, "combined_prominence": float(prominence)}
+        {"combined_signals": specs, "combined_prominence": 0.001}
     )
 
     wav = MODEL.load_audio(audio_path)
@@ -160,11 +160,11 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
         5,
         1,
         figsize=(13, 9.5),
-        height_ratios=[3, 4.5, 1.3, 0.7, 0.7],
+        height_ratios=[3, 4.5, 0.7, 1.3, 0.7],
         sharex=True,
         layout="constrained",
     )
-    ax_spec, ax_spam, ax_sig, ax_step, ax_phn = axes
+    ax_spec, ax_spam, ax_step, ax_sig, ax_phn = axes
 
     SpecPlotter(sample_rate=MODEL.sr).plot_spectrogram(wav, ax=ax_spec, show_annotation=False)
     ax_spec.set_title("Spectrogram", loc="left", fontsize=10)
@@ -187,7 +187,7 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
     ax_spam.set_yticks(range(len(order)), [spam.featnames[i] for i in order], fontsize=6)
     ax_spam.set_ylabel("SPAM")
     ax_spam.set_title(
-        f"Phonological activation map ({len(spam.featnames)} channels)", loc="left", fontsize=10
+        f"SPAM: S3M-based Phonological Activation Map ({len(spam.featnames)} channels)", loc="left", fontsize=10
     )
 
     # Edge frames are NaN (the delta/contrast windows have no room there).
@@ -200,21 +200,23 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
         pad = 0.05 * (finite.max() - finite.min() or 1.0)
         ax_sig.set_ylim(finite.min() - pad, finite.max() + pad)
     ax_sig.set_ylabel("signal")
-    ax_sig.set_title("Combined boundary signal — selected peaks marked", loc="left", fontsize=10)
+    ax_sig.set_title("Combined boundary signal", loc="left", fontsize=10)
     ax_sig.margins(x=0)
 
     _strip(ax_step, stepwise, "#f3e7dc", "#bb9c82", fontsize=6)
     ax_step.set_ylabel("frame-wise")
     ax_step.set_title(
-        "Recognition head alone, per frame — no segmentation", loc="left", fontsize=10
+        "Recognition head alone, per frame", loc="left", fontsize=10
     )
 
     _strip(ax_phn, list(zip(edges[:-1], edges[1:], labels, strict=True)), "#dfe7f5", "#8296bb")
     ax_phn.set_ylabel("phones")
-    ax_phn.set_title("Both heads — one label per segment", loc="left", fontsize=10)
+    ax_phn.set_title("Final prediction (using both recognition and segmentation heads)", loc="left", fontsize=10)
     ax_phn.set_xlabel("Time [s]")
 
     for ax in axes:
+        if ax is ax_step:
+            continue
         colour = "white" if ax is ax_spam else "black"
         for t in times:
             ax.axvline(t, color=colour, lw=0.8, alpha=0.75)
@@ -229,11 +231,6 @@ with gr.Blocks(title="SPAM Demo") as demo:
 Demo for [Phone Segmentation and Recognition through Phonological Activation
 Mapping](https://arxiv.org/abs/2607.09020) (SLT 2026), using
 [`{MODEL_ID}`](https://huggingface.co/{MODEL_ID}).
-
-The model maps each self-supervised speech frame to phonological feature
-activations (**SPAM**), then reads both tasks off that one representation: a
-segmentation head picks boundaries from a combined signal, and a recognition
-head labels the spans between them.
 
 Upload audio, record your own, or use the example, then click **Run**.
 """)
@@ -262,26 +259,16 @@ The example is TIMIT's `LDC93S1`: *"{EXAMPLE_TEXT}"*
                 value=UNCONSTRAINED,
                 label="Phone inventory",
                 info=(
-                    "Restrict recognition to one language's PHOIBLE inventory "
-                    "(allophones, or phonemes where a source has none)."
+                    "Restrict recognition to one language's PHOIBLE inventory."
                 ),
-                interactive=True,
-            )
-            prominence = gr.Slider(
-                label="Boundary sensitivity",
-                info="Peak prominence required for a boundary. Lower finds more; the released model uses 0.001.",
-                minimum=0.001,
-                maximum=1.0,
-                value=Segmenter.default_hparams()["combined_prominence"],
-                step=0.001,
                 interactive=True,
             )
             run_btn = gr.Button("▶ Run", variant="primary")
 
     plot = gr.Plot(show_label=False)
 
-    run_btn.click(fn=analyze, inputs=[audio, signal_boxes, language, prominence], outputs=plot)
-    demo.load(fn=analyze, inputs=[audio, signal_boxes, language, prominence], outputs=plot)
+    run_btn.click(fn=analyze, inputs=[audio, signal_boxes, language], outputs=plot)
+    demo.load(fn=analyze, inputs=[audio, signal_boxes, language], outputs=plot)
 
 if __name__ == "__main__":
     demo.launch()
