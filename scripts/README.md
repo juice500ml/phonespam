@@ -39,6 +39,18 @@ TIMIT_ROOT=/path/to/TIMIT VOX_ROOT=/path/to/voxangeles \
 | [`evaluate_metrics.py`](evaluate_metrics.py) | Scores a trained artifact: boundary R-value, plus oracle and full-pipeline PER/TER/PFER on TIMIT test and VoxAngeles. `--model` also takes a Hub id. Set `CACHE_DIR` to memoize per-utterance inference across runs. |
 | [`boundary_errors.py`](boundary_errors.py) | Where the segmenter deletes and inserts boundaries, attributed to phonetic context (silence edges, vowel–approximant transitions, and per-class split rates). |
 
+## Interactive demo
+
+[`demo/`](demo/) is a Gradio app: record or upload audio and see the
+spectrogram, the SPAM, the boundary signal and the recognized phones on one
+shared time axis. It doubles as the HuggingFace Space configuration — see
+[`demo/README.md`](demo/README.md).
+
+```bash
+pip install -r demo/requirements.txt
+python demo/app.py
+```
+
 ## Notebooks
 
 | | |

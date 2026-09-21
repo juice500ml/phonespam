@@ -957,3 +957,41 @@ def test_recognize_rejects_empty_vocab():
 
     # None still means "unconstrained".
     assert len(rec.recognize(post, [0.1], sr=16000, frame_shift=320, vocab=None)) == 2
+
+
+def test_segment_return_signal(monkeypatch):
+    """return_signal hands back the per-frame signal the peaks came from."""
+    post = _make_posteriogram(in_dim=4, n_feat=3)
+    # hparams={} rather than None: the auto-disable of drop_closure_release for
+    # posteriograms without closure/release channels only fires when hparams is
+    # not None (see Segmenter.__init__).
+    seg = Segmenter(post, sr=16000, hparams={})
+    feats = np.zeros((40, 4), dtype=np.float32)
+    wav = np.zeros(40 * 320, dtype=np.float32)
+
+    bounds = seg.segment(feats, wav)
+    bounds2, signal = seg.segment(feats, wav, return_signal=True)
+
+    # Same boundaries either way; the signal is just also returned.
+    np.testing.assert_array_equal(bounds, bounds2)
+    assert signal.shape == (len(feats),)
+    # Every returned boundary indexes into the signal it was picked from.
+    assert all(0 <= b < len(signal) for b in bounds2)
+
+
+def test_phone_model_segment_forwards_return_signal(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(
+        Segmenter,
+        "segment",
+        lambda self, f, w, snap_silence=None, return_signal=False: (
+            (np.array([10]), np.zeros(len(f))) if return_signal else np.array([10])
+        ),
+    )
+    feats = np.zeros((50, 4), dtype=np.float32)
+    wav = np.zeros(16000, dtype=np.float32)
+
+    assert model.segment(feats, wav).tolist() == [10]
+    bounds, signal = model.segment(feats, wav, return_signal=True)
+    assert bounds.tolist() == [10]
+    assert signal.shape == (50,)

@@ -343,14 +343,17 @@ class PhoneModel:
             return self.load_audio(audio)
         return np.asarray(audio, dtype=np.float32)
 
-    def segment(self, features: np.ndarray, waveform: np.ndarray) -> np.ndarray:
+    def segment(
+        self, features: np.ndarray, waveform: np.ndarray, *, return_signal: bool = False
+    ) -> np.ndarray:
         """Phone boundaries as **frame indices**, using the model's hparams.
 
-        For a different configuration, use
+        With ``return_signal=True`` returns ``(boundaries, signal)``; see
+        :meth:`Segmenter.segment`. For a different configuration, use
         ``model.segmenter.with_hparams({...}).segment(...)``. See
         :meth:`boundary_times` for the same boundaries in seconds.
         """
-        return self.segmenter.segment(features, waveform)
+        return self.segmenter.segment(features, waveform, return_signal=return_signal)
 
     def recognize(self, posteriogram, boundaries, *, vocab=None) -> list[str]:
         """Label each segment defined by ``boundaries``.
