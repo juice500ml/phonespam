@@ -1,5 +1,6 @@
 # SPAM
-- SPAM means Self-supervised speech model-based Phonological Activation Mapping.
+- SPAM = Self-supervised speech model-based Phonological Activation Mapping
+- Demo at [https://phonespam.streamlit.app/](https://phonespam.streamlit.app/)
 - Paper accepted to SLT 2026: [Phone Segmentation and Recognition through Phonological Activation Mapping](https://arxiv.org/abs/2607.09020) (Shikhar Bharadwaj∗, Kwanghee Choi∗, Stephen McIntosh∗, Chin-Jou Li, Eunjung Yeo,
 Daisuke Saito, Nobuaki Minematsu, Shinji Watanabe, Jian Zhu, David Harwath and David R. Mortensen)
 - Phonological vector first came from [[b]=[d]-[t]+[p]: Self-supervised Speech Models Discover Phonological Vector Arithmetic](https://aclanthology.org/2026.findings-acl.537/), and SPAM first came from [Self-Supervised Speech Models Encode Phonetic Context via Position-dependent Orthogonal Subspaces](https://arxiv.org/abs/2603.12642) as a visualization tool.
