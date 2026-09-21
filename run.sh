@@ -11,8 +11,7 @@
 #
 # Requirements:
 #   - TIMIT_ROOT / VOX_ROOT pointing at the distributed corpora.
-#   - pip install -e ".[train]" plus phone-metrics (not on PyPI):
-#       pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
+#   - pip install -e ".[train]"
 #   - A GPU is strongly recommended for stages 2 and 4.
 #
 # Usage:

@@ -47,10 +47,7 @@ try:
     from phone_metrics.timit import TIMIT_CLOSURE_OF, timit_segments
 except ImportError as e:  # pragma: no cover - depends on the environment
     raise ImportError(
-        "phone-metrics is required for boundary error analysis, but it is not on "
-        "PyPI. Install it with:\n    pip install 'phone-metrics @ "
-        "git+https://github.com/stephenmac7/phone-metrics@v0.1.0'\n"
-        "or, with uv, `uv sync --group train`."
+        "phone-metrics is required for boundary error analysis:\n    pip install 'phonespam[train]'"
     ) from e
 from tqdm import tqdm
 

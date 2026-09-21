@@ -34,8 +34,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[train,dev]"
-        # Not on PyPI, so it cannot be an extra; see pyproject [dependency-groups].
-        pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
 
     # The PHOIBLE table (~26 MB) is fetched on first use and pinned by commit,
     # so the cache key only changes when the pin in phonespam/phoible.py does.
@@ -83,9 +81,8 @@ jobs:
 
     - name: Reject direct URL requirements
       # PyPI refuses any `name @ git+https://...` requirement in published
-      # metadata, extras included. phone-metrics is the live temptation here
-      # (see pyproject [dependency-groups]), and the upload would fail only
-      # after a release tag had already been pushed.
+      # metadata, extras included, and the upload would fail only after a
+      # release tag had already been pushed.
       run: |
         python - <<'EOF'
         import glob, zipfile

@@ -25,15 +25,8 @@ To train or evaluate, clone the repo and install the `train` extra:
 ```bash
 git clone https://github.com/juice500ml/phonespam.git
 cd phonespam
-uv venv && uv pip install -e ".[train]" && uv sync --group train
+uv venv && uv pip install -e ".[train]"
 # or: python -m venv .venv && source .venv/bin/activate && pip install -e ".[train]"
-```
-
-Dataset preparation and evaluation also need
-[`phone-metrics`](https://github.com/stephenmac7/phone-metrics).
-`uv sync --group train` installs it; with plain pip:
-```bash
-pip install "phone-metrics @ git+https://github.com/stephenmac7/phone-metrics@v0.1.0"
 ```
 
 ## Usage
