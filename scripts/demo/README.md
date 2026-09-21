@@ -3,7 +3,7 @@ title: SPAM Phone Segmentation and Recognition
 emoji: 🗣️
 colorFrom: indigo
 colorTo: gray
-sdk: gradio
+sdk: streamlit
 app_file: app.py
 pinned: false
 license: mit
@@ -38,7 +38,7 @@ Controls:
 
 ```bash
 pip install -r requirements.txt
-GRADIO_TEMP_DIR=$PWD/.gradio_tmp python app.py
+streamlit run app.py
 ```
 
 This folder is a demo. It is not part of the `phonespam` package and nothing in the library imports from it — see [`../README.md`](../README.md).
@@ -53,17 +53,17 @@ cp -r scripts/demo/* hf-space/
 cd hf-space && git add -A && git commit -m "SPAM demo" && git push
 ```
 
-Pick **CPU basic** for the hardware. The app has no GPU code, and on two vCPUs
-it runs about 5x faster than real time: ~0.7 s for the 2.9 s example, ~4 s for
-20 s of audio, in under 3 GB of RAM. Startup takes ~10 s plus the first-boot
-downloads (the 1.2 GB encoder and the 26 MB PHOIBLE table), all of which happen
-once rather than per request.
+The app is CPU-only and needs no GPU. On two vCPUs it runs about 5x faster than
+real time: ~0.7 s of compute for the 2.9 s example, ~4 s for 20 s of audio, in
+under 3 GB of RAM.
 
-Do **not** pick ZeroGPU: it only allocates a GPU to functions decorated with
-`@spaces.GPU` and refuses to start when it finds none, failing with
-*"No @spaces.GPU function detected during startup"*. Using it would mean adding
-the `spaces` dependency and moving the model to CUDA inside the decorated
-function — CUDA cannot be initialised at import time under ZeroGPU.
+The model, encoder and PHOIBLE table load once behind `st.cache_resource`, and
+the speech encoder — the only slow step — is cached per input clip with
+`st.cache_data`, so changing a checkbox or the language re-runs just the heads.
+
+Do **not** pick ZeroGPU hardware: it allocates a GPU only to functions
+decorated with `@spaces.GPU` and refuses to start when it finds none, failing
+with *"No @spaces.GPU function detected during startup"*.
 
 ## Example audio
 
