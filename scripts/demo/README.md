@@ -3,7 +3,7 @@ title: SPAM Phone Segmentation and Recognition
 emoji: 🗣️
 colorFrom: indigo
 colorTo: gray
-sdk: gradio
+sdk: streamlit
 app_file: app.py
 pinned: false
 license: mit
@@ -38,23 +38,9 @@ Controls:
 
 ```bash
 pip install -r requirements.txt
-GRADIO_TEMP_DIR=$PWD/.gradio_tmp python app.py
+streamlit run app.py
 ```
-
 This folder is a demo. It is not part of the `phonespam` package and nothing in the library imports from it — see [`../README.md`](../README.md).
-
-## Deploying as a Space
-
-The YAML header above is the Space configuration, so the folder can be pushed to a HuggingFace Space as-is:
-
-```bash
-git clone https://huggingface.co/spaces/<user>/<space> hf-space
-cp -r scripts/demo/* hf-space/
-cd hf-space && git add -A && git commit -m "SPAM demo" && git push
-```
-
-CPU is enough — inference is roughly real-time — but the Space needs disk for
-the encoder and enough RAM to hold it.
 
 ## Example audio
 

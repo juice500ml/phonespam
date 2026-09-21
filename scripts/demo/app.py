@@ -1,14 +1,15 @@
-"""Gradio demo: spectrogram, SPAM, boundary signal and phones on one time axis.
+"""Streamlit demo: spectrogram, SPAM, boundary signal and phones on one time axis.
 
-Run locally with `python app.py`, or deploy the folder as a HuggingFace Space.
+Run locally with `streamlit run app.py`.
 Not part of the phonespam package -- see ../README.md.
 """
 
+import tempfile
 from itertools import groupby
 from pathlib import Path
 
-import gradio as gr
 import matplotlib
+import streamlit as st
 
 matplotlib.use("Agg")
 
@@ -90,33 +91,43 @@ def _signal_groups():
 SIGNAL_GROUPS = _signal_groups()
 SIGNAL_CHOICES = list(SIGNAL_GROUPS)
 
-# Loaded once at startup, not per request.
-print(f"loading {MODEL_ID} ...")
-MODEL = PhoneModel.from_pretrained(MODEL_ID)
-_ = MODEL.encoder  # force the lazy SSL encoder download now, not on first click
-print("warming the PHOIBLE inventory table ...")
-phoible_csv_path()
-LANGUAGES = _languages()
-print(f"ready ({len(LANGUAGES) - 1} languages).")
+
+@st.cache_resource(show_spinner="Loading the model and the PHOIBLE table ...")
+def _load():
+    """Model, encoder and inventory table. Cached across reruns and sessions."""
+    model = PhoneModel.from_pretrained(MODEL_ID)
+    _ = model.encoder
+    phoible_csv_path()
+    return model, _languages()
 
 
-def analyze(audio_path, signals, language):
-    """Run the model and draw the four aligned panels."""
-    if not audio_path:
-        raise gr.Error("Provide some audio: upload a file, record, or use the example.")
-    if not signals:
-        raise gr.Error(
-            "Select at least one segmentation signal -- with none of them there is "
-            "no boundary signal to find peaks in."
-        )
+MODEL, LANGUAGES = _load()
 
+
+@st.cache_data(show_spinner="Running the speech encoder ...", max_entries=8)
+def _encode(audio: bytes):
+    """Waveform and S3M features for some audio, keyed on its bytes.
+
+    Cached separately from the rest so changing a control does not re-run the
+    encoder, which is the only slow step.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
+        fh.write(audio)
+        path = fh.name
+    try:
+        wav = MODEL.load_audio(path)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    return wav, MODEL.extract_features(wav)
+
+
+def analyze(wav, feats, signals, language):
+    """Run the heads over encoded audio and draw the aligned panels."""
     specs = [spec for name in signals for spec in SIGNAL_GROUPS[name]]
     segmenter = MODEL.segmenter.with_hparams(
         {"combined_signals": specs, "combined_prominence": 0.001}
     )
 
-    wav = MODEL.load_audio(audio_path)
-    feats = MODEL.extract_features(wav)
     spam = MODEL.spam_from_features(feats)  # normalized to [0, 1]
     duration = len(wav) / MODEL.sr
 
@@ -226,49 +237,56 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
     return fig
 
 
-with gr.Blocks(title="SPAM Demo") as demo:
-    gr.Markdown(f"""
+st.set_page_config(page_title="SPAM Demo", layout="wide")
+
+st.markdown(f"""
 ## 🗣️ SPAM — Phone Segmentation and Recognition Demo
 
 Demo for [Phone Segmentation and Recognition through Phonological Activation
 Mapping](https://arxiv.org/abs/2607.09020) (SLT 2026), using
 [`{MODEL_ID}`](https://huggingface.co/{MODEL_ID}).
 
-Upload audio, record your own, or use the example, then click **Run**.
+Upload audio, record your own, or use the example.
 """)
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            audio = gr.Audio(
-                label="Input Audio",
-                type="filepath",
-                sources=["upload", "microphone"],
-                value=str(EXAMPLE_AUDIO),
-            )
-            gr.Markdown(f"""
-The example is TIMIT's `LDC93S1`: *"{EXAMPLE_TEXT}"*
-""")
-        with gr.Column(scale=1):
-            signal_boxes = gr.CheckboxGroup(
-                choices=SIGNAL_CHOICES,
-                value=SIGNAL_CHOICES,
-                label="Segmentation signals",
-                info="The released model combines all four as a fuzzy-AND.",
-                interactive=True,
-            )
-            language = gr.Dropdown(
-                choices=list(LANGUAGES),
-                value=UNCONSTRAINED,
-                label="Phone inventory",
-                info=("Restrict recognition to one language's PHOIBLE inventory."),
-                interactive=True,
-            )
-            run_btn = gr.Button("▶ Run", variant="primary")
+left, right = st.columns(2)
 
-    plot = gr.Plot(show_label=False)
+with left:
+    source = st.radio(
+        "Input audio",
+        ["Example utterance", "Upload a file", "Record"],
+        horizontal=True,
+    )
+    if source == "Upload a file":
+        upload = st.file_uploader("Audio file", type=["wav", "flac", "mp3", "ogg", "m4a"])
+        audio_bytes = upload.getvalue() if upload else None
+    elif source == "Record":
+        recording = st.audio_input("Record something")
+        audio_bytes = recording.getvalue() if recording else None
+    else:
+        audio_bytes = EXAMPLE_AUDIO.read_bytes()
+        st.caption(f'TIMIT\'s `LDC93S1`: *"{EXAMPLE_TEXT}"*')
+    if audio_bytes:
+        st.audio(audio_bytes)
 
-    run_btn.click(fn=analyze, inputs=[audio, signal_boxes, language], outputs=plot)
-    demo.load(fn=analyze, inputs=[audio, signal_boxes, language], outputs=plot)
+with right:
+    st.write("**Segmentation signals**")
+    st.caption("The released model combines all four as a fuzzy-AND.")
+    signals = [name for name in SIGNAL_CHOICES if st.checkbox(name, value=True)]
+    language = st.selectbox(
+        "Phone inventory",
+        list(LANGUAGES),
+        index=0,
+        help="Restrict recognition to one language's PHOIBLE inventory.",
+    )
 
-if __name__ == "__main__":
-    demo.launch()
+if not audio_bytes:
+    st.info("Provide some audio: upload a file, record, or use the example.")
+elif not signals:
+    st.warning(
+        "Select at least one segmentation signal — with none of them there is "
+        "no boundary signal to find peaks in."
+    )
+else:
+    wav, feats = _encode(audio_bytes)
+    st.pyplot(analyze(wav, feats, signals, language), width="stretch")

@@ -1,5 +1,5 @@
 phonespam
 specplotter
-gradio
+streamlit
 matplotlib
 numpy
