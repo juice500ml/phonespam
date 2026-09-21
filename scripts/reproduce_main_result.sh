@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# End-to-end reproduction: raw corpora -> per-phone CSVs -> SSL features ->
-# trained PhoneModel -> published metrics.
+# Reproduces the paper's main result: raw corpora -> per-phone CSVs -> S3M
+# features -> a trained PhoneModel -> the reported metrics. The wavlm/24 run
+# here is the released juice500/wavlm-24-phonemodel.
 #
 # Stages (each is skipped if its output already exists, so the script is
 # resumable; pass FORCE=1 to redo everything):
 #   1) training/prepare_datasets  -> ${DATA_DIR}/{timit-raw,timit-merged,voxangeles}.csv
 #   2) training/extract_features  -> ${FEATS_DIR}/${TAG}.pkl
 #   3) training/train             -> ${MODELS_DIR}/${TAG}/model.pt
-#   4) scripts/evaluate_metrics   -> TIMIT + VoxAngeles segmentation/recognition
+#   4) evaluate_metrics.py        -> TIMIT + VoxAngeles segmentation/recognition
 #
 # Requirements:
 #   - TIMIT_ROOT / VOX_ROOT pointing at the distributed corpora.
 #   - pip install -e ".[train]"
 #   - A GPU is strongly recommended for stages 2 and 4.
 #
-# Usage:
-#   TIMIT_ROOT=/path/to/TIMIT VOX_ROOT=/path/to/voxangeles ./run.sh
+# Usage (runnable from anywhere; outputs land under the repo root by default):
+#   TIMIT_ROOT=/path/to/TIMIT VOX_ROOT=/path/to/voxangeles \
+#     scripts/reproduce_main_result.sh
 
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${HERE}/.." && pwd)"
 
 : "${TIMIT_ROOT:?set TIMIT_ROOT=/path/to/TIMIT}"
 : "${VOX_ROOT:?set VOX_ROOT=/path/to/voxangeles}"
@@ -27,12 +32,12 @@ SSL_MODEL="${SSL_MODEL:-microsoft/wavlm-large}"
 LAYER="${LAYER:--1}"          # -1 == last hidden state (layer 24 for wavlm-large)
 TAG="${TAG:-wavlm-24-timit}"
 
-DATA_DIR="${DATA_DIR:-data}"
-FEATS_DIR="${FEATS_DIR:-feats}"
-MODELS_DIR="${MODELS_DIR:-models}"
+DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data}"
+FEATS_DIR="${FEATS_DIR:-${REPO_ROOT}/feats}"
+MODELS_DIR="${MODELS_DIR:-${REPO_ROOT}/models}"
 # Memoizes per-utterance inference in stage 4 so metrics can be re-derived
 # without re-running the encoder. Keyed by model + segmentation config.
-export CACHE_DIR="${CACHE_DIR:-exp/eval_cache}"
+export CACHE_DIR="${CACHE_DIR:-${REPO_ROOT}/exp/eval_cache}"
 
 mkdir -p "$DATA_DIR" "$FEATS_DIR" "$MODELS_DIR" "$CACHE_DIR"
 
@@ -79,7 +84,7 @@ fi
 # --- 4. metrics ----------------------------------------------------------- #
 # Reports segmentation (R-value, precision/recall) and recognition (PER/PFER)
 # on TIMIT test and VoxAngeles.
-python3 scripts/evaluate_metrics.py \
+python3 "${HERE}/evaluate_metrics.py" \
   --model "$MODEL_DIR" \
   --timit_root "$TIMIT_ROOT" \
   --vox_root "$VOX_ROOT" \
