@@ -1,6 +1,6 @@
-"""Gradio demo: spectrogram, SPAM, boundary signal and phones on one time axis.
+"""Streamlit demo: spectrogram, SPAM, boundary signal and phones on one time axis.
 
-Run locally with `python app.py`, or deploy the folder as a HuggingFace Space.
+Run locally with `streamlit run app.py`.
 Not part of the phonespam package -- see ../README.md.
 """
 

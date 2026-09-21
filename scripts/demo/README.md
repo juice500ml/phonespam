@@ -40,30 +40,7 @@ Controls:
 pip install -r requirements.txt
 streamlit run app.py
 ```
-
 This folder is a demo. It is not part of the `phonespam` package and nothing in the library imports from it — see [`../README.md`](../README.md).
-
-## Deploying as a Space
-
-The YAML header above is the Space configuration, so the folder can be pushed to a HuggingFace Space as-is:
-
-```bash
-git clone https://huggingface.co/spaces/<user>/<space> hf-space
-cp -r scripts/demo/* hf-space/
-cd hf-space && git add -A && git commit -m "SPAM demo" && git push
-```
-
-The app is CPU-only and needs no GPU. On two vCPUs it runs about 5x faster than
-real time: ~0.7 s of compute for the 2.9 s example, ~4 s for 20 s of audio, in
-under 3 GB of RAM.
-
-The model, encoder and PHOIBLE table load once behind `st.cache_resource`, and
-the speech encoder — the only slow step — is cached per input clip with
-`st.cache_data`, so changing a checkbox or the language re-runs just the heads.
-
-Do **not** pick ZeroGPU hardware: it allocates a GPU only to functions
-decorated with `@spaces.GPU` and refuses to start when it finds none, failing
-with *"No @spaces.GPU function detected during startup"*.
 
 ## Example audio
 
