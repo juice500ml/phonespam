@@ -261,11 +261,11 @@ class Segmenter:
         # a new hparam was added) still yields a complete config.
         self.hparams = {**self.default_hparams(), **(hparams or {})}
         mel_frames_per_s3m_frame(self.sr, self.hparams["mel_frame_shift_ms"])
-        if (
-            hparams is not None
-            and "drop_closure_release" not in hparams
-            and not {"closure+", "release+"}.issubset(posteriogram.featnames)
-        ):
+        # `hparams or {}`: omitting hparams must behave like passing {}.
+        if "drop_closure_release" not in (hparams or {}) and not {
+            "closure+",
+            "release+",
+        }.issubset(posteriogram.featnames):
             self.hparams["drop_closure_release"] = False
 
     def with_hparams(self, hparams_override):
@@ -350,9 +350,7 @@ class Segmenter:
 
         With ``return_signal=True`` returns ``(boundaries, signal)``, where
         ``signal`` is the per-frame combined boundary signal the peaks were
-        picked from -- one value per feature frame, on the same time axis as
-        ``net_feats``. Useful for plotting what drove a segmentation, and for
-        seeing how ``combined_prominence`` relates to the peaks.
+        picked from, on the same time axis as ``net_feats``.
         """
         h = self.hparams
         if snap_silence is None:

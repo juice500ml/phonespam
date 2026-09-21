@@ -962,10 +962,7 @@ def test_recognize_rejects_empty_vocab():
 def test_segment_return_signal(monkeypatch):
     """return_signal hands back the per-frame signal the peaks came from."""
     post = _make_posteriogram(in_dim=4, n_feat=3)
-    # hparams={} rather than None: the auto-disable of drop_closure_release for
-    # posteriograms without closure/release channels only fires when hparams is
-    # not None (see Segmenter.__init__).
-    seg = Segmenter(post, sr=16000, hparams={})
+    seg = Segmenter(post, sr=16000)
     feats = np.zeros((40, 4), dtype=np.float32)
     wav = np.zeros(40 * 320, dtype=np.float32)
 
@@ -995,3 +992,32 @@ def test_phone_model_segment_forwards_return_signal(monkeypatch):
     bounds, signal = model.segment(feats, wav, return_signal=True)
     assert bounds.tolist() == [10]
     assert signal.shape == (50,)
+
+
+def test_segmenter_omitting_hparams_matches_empty_hparams():
+    """Omitting hparams must behave like passing {}; it used to raise."""
+    post = _make_posteriogram()  # featnames have no closure+/release+
+    assert not {"closure+", "release+"}.issubset(post.featnames)
+    feats = np.zeros((40, 4), dtype=np.float32)
+    wav = np.zeros(40 * 320, dtype=np.float32)
+
+    omitted = Segmenter(post, sr=16000)
+    empty = Segmenter(post, sr=16000, hparams={})
+    assert omitted.hparams == empty.hparams
+    assert omitted.hparams["drop_closure_release"] is False
+    np.testing.assert_array_equal(omitted.segment(feats, wav), empty.segment(feats, wav))
+
+
+def test_segmenter_keeps_explicit_drop_closure_release():
+    """An explicit request is not silently overridden."""
+    post = _make_posteriogram()
+    seg = Segmenter(post, sr=16000, hparams={"drop_closure_release": True})
+    assert seg.hparams["drop_closure_release"] is True
+    with pytest.raises(ValueError, match="closure\\+"):
+        seg.segment(np.zeros((40, 4), dtype=np.float32), np.zeros(40 * 320, dtype=np.float32))
+
+
+def test_segmenter_keeps_closure_release_when_channels_exist():
+    """Posteriograms that do have the channels keep the default enabled."""
+    post = _make_posteriogram(n_feat=4, ipa_featnames=["silence+", "closure+", "release+", "f0"])
+    assert Segmenter(post, sr=16000).hparams["drop_closure_release"] is True

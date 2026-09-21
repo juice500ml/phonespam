@@ -23,9 +23,6 @@ MODEL_ID = "juice500/wavlm-24-phonemodel"
 EXAMPLE_AUDIO = Path(__file__).parent / "examples" / "LDC93S1.wav"
 EXAMPLE_TEXT = "She had your dark suit in greasy wash water all year."
 
-# Languages offered for the inventory constraint. The model is fit on TIMIT,
-# so the non-English entries show the cross-lingual behaviour: recognition is
-# restricted to phones the target language actually has.
 LANGUAGES = {
     "Unconstrained (any PanPhon phone)": None,
     "English": "eng",
@@ -39,12 +36,10 @@ LANGUAGES = {
 
 
 def _signal_groups():
-    """Group the model's default boundary signals under the UI's four labels.
+    """Group DEFAULT_COMBINED_SIGNALS under the UI's four labels.
 
-    Derived from ``Segmenter.DEFAULT_COMBINED_SIGNALS`` rather than hardcoded,
-    so the checkboxes keep matching the ensemble if the defaults ever change.
-    The split mirrors the ablation ladder in ``scripts/method_ablation.sh``:
-    one frame delta, then wider deltas, then backward contrast, then mel-SVF.
+    Derived rather than hardcoded so the checkboxes cannot drift from the
+    ensemble. Mirrors the ablation ladder in ``scripts/method_ablation.sh``.
     """
     groups = {
         "Diff. between frames": [],
@@ -68,8 +63,7 @@ def _signal_groups():
 SIGNAL_GROUPS = _signal_groups()
 SIGNAL_CHOICES = list(SIGNAL_GROUPS)
 
-# Load once at startup: the encoder is ~1.2 GB and the PHOIBLE table ~26 MB,
-# so paying for them per request would dominate the response time.
+# Loaded once at startup, not per request.
 print(f"loading {MODEL_ID} ...")
 MODEL = PhoneModel.from_pretrained(MODEL_ID)
 _ = MODEL.encoder  # force the lazy SSL encoder download now, not on first click
@@ -111,12 +105,10 @@ def analyze(audio_path, signals, language, prominence):
     )
     edges = np.concatenate([[0.0], times, [duration]])
 
-    return _figure(wav, spam, signal, times, edges, labels, duration, prominence)
+    return _figure(wav, spam, signal, times, edges, labels, duration)
 
 
-def _figure(wav, spam, signal, times, edges, labels, duration, prominence):
-    # The SPAM panel gets the same height as the spectrogram; the signal and
-    # phone strips sit under them on the same time axis.
+def _figure(wav, spam, signal, times, edges, labels, duration):
     fig, axes = plt.subplots(
         4,
         1,
@@ -127,16 +119,13 @@ def _figure(wav, spam, signal, times, edges, labels, duration, prominence):
     )
     ax_spec, ax_spam, ax_sig, ax_phn = axes
 
-    # --- spectrogram: x already in seconds, y in kHz ---
     SpecPlotter(sample_rate=MODEL.sr).plot_spectrogram(wav, ax=ax_spec, show_annotation=False)
     ax_spec.set_title("Spectrogram", loc="left", fontsize=10)
-    # SpecPlotter draws its own ticks and label; with sharex they duplicate the
-    # bottom axis, and its 0.1 s dotted grid competes with the boundary lines.
+    # SpecPlotter draws its own ticks and grid; sharex makes them redundant.
     ax_spec.set_xlabel("")
     ax_spec.grid(False)
     plt.setp(ax_spec.get_xticklabels(), visible=False)
 
-    # --- SPAM: every channel, normalized to [0, 1] ---
     ax_spam.imshow(
         np.asarray(spam).T,
         aspect="auto",
@@ -155,9 +144,7 @@ def _figure(wav, spam, signal, times, edges, labels, duration, prominence):
         f"Phonological activation map ({len(spam.featnames)} channels)", loc="left", fontsize=10
     )
 
-    # --- boundary signal, with the peaks that became boundaries ---
-    # The first and last frames are NaN: the delta and contrast windows have
-    # no room there. nan-aware limits keep the line readable.
+    # Edge frames are NaN (the delta/contrast windows have no room there).
     frame_times = spam.times
     ax_sig.plot(frame_times, signal, lw=1.0, color="#1f77b4")
     peak_idx = MODEL.encoder.time_to_frame(times)
@@ -167,14 +154,9 @@ def _figure(wav, spam, signal, times, edges, labels, duration, prominence):
         pad = 0.05 * (finite.max() - finite.min() or 1.0)
         ax_sig.set_ylim(finite.min() - pad, finite.max() + pad)
     ax_sig.set_ylabel("signal")
-    ax_sig.set_title(
-        f"Combined boundary signal — peaks with prominence > {prominence:g}",
-        loc="left",
-        fontsize=10,
-    )
+    ax_sig.set_title("Combined boundary signal — selected peaks marked", loc="left", fontsize=10)
     ax_sig.margins(x=0)
 
-    # --- recognized phones ---
     for start, end, label in zip(edges[:-1], edges[1:], labels, strict=True):
         ax_phn.add_patch(
             plt.Rectangle(
@@ -188,7 +170,6 @@ def _figure(wav, spam, signal, times, edges, labels, duration, prominence):
     ax_phn.set_ylabel("phones")
     ax_phn.set_xlabel("Time [s]")
 
-    # --- the shared boundaries ---
     for ax in axes:
         colour = "white" if ax is ax_spam else "black"
         for t in times:
