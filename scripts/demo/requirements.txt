@@ -1,0 +1,5 @@
+phonespam
+specplotter
+gradio
+matplotlib
+numpy

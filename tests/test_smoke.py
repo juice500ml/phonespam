@@ -957,3 +957,67 @@ def test_recognize_rejects_empty_vocab():
 
     # None still means "unconstrained".
     assert len(rec.recognize(post, [0.1], sr=16000, frame_shift=320, vocab=None)) == 2
+
+
+def test_segment_return_signal(monkeypatch):
+    """return_signal hands back the per-frame signal the peaks came from."""
+    post = _make_posteriogram(in_dim=4, n_feat=3)
+    seg = Segmenter(post, sr=16000)
+    feats = np.zeros((40, 4), dtype=np.float32)
+    wav = np.zeros(40 * 320, dtype=np.float32)
+
+    bounds = seg.segment(feats, wav)
+    bounds2, signal = seg.segment(feats, wav, return_signal=True)
+
+    # Same boundaries either way; the signal is just also returned.
+    np.testing.assert_array_equal(bounds, bounds2)
+    assert signal.shape == (len(feats),)
+    # Every returned boundary indexes into the signal it was picked from.
+    assert all(0 <= b < len(signal) for b in bounds2)
+
+
+def test_phone_model_segment_forwards_return_signal(monkeypatch):
+    model = _transcribe_model(monkeypatch)
+    monkeypatch.setattr(
+        Segmenter,
+        "segment",
+        lambda self, f, w, snap_silence=None, return_signal=False: (
+            (np.array([10]), np.zeros(len(f))) if return_signal else np.array([10])
+        ),
+    )
+    feats = np.zeros((50, 4), dtype=np.float32)
+    wav = np.zeros(16000, dtype=np.float32)
+
+    assert model.segment(feats, wav).tolist() == [10]
+    bounds, signal = model.segment(feats, wav, return_signal=True)
+    assert bounds.tolist() == [10]
+    assert signal.shape == (50,)
+
+
+def test_segmenter_omitting_hparams_matches_empty_hparams():
+    """Omitting hparams must behave like passing {}; it used to raise."""
+    post = _make_posteriogram()  # featnames have no closure+/release+
+    assert not {"closure+", "release+"}.issubset(post.featnames)
+    feats = np.zeros((40, 4), dtype=np.float32)
+    wav = np.zeros(40 * 320, dtype=np.float32)
+
+    omitted = Segmenter(post, sr=16000)
+    empty = Segmenter(post, sr=16000, hparams={})
+    assert omitted.hparams == empty.hparams
+    assert omitted.hparams["drop_closure_release"] is False
+    np.testing.assert_array_equal(omitted.segment(feats, wav), empty.segment(feats, wav))
+
+
+def test_segmenter_keeps_explicit_drop_closure_release():
+    """An explicit request is not silently overridden."""
+    post = _make_posteriogram()
+    seg = Segmenter(post, sr=16000, hparams={"drop_closure_release": True})
+    assert seg.hparams["drop_closure_release"] is True
+    with pytest.raises(ValueError, match="closure\\+"):
+        seg.segment(np.zeros((40, 4), dtype=np.float32), np.zeros(40 * 320, dtype=np.float32))
+
+
+def test_segmenter_keeps_closure_release_when_channels_exist():
+    """Posteriograms that do have the channels keep the default enabled."""
+    post = _make_posteriogram(n_feat=4, ipa_featnames=["silence+", "closure+", "release+", "f0"])
+    assert Segmenter(post, sr=16000).hparams["drop_closure_release"] is True

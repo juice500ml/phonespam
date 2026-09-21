@@ -261,11 +261,11 @@ class Segmenter:
         # a new hparam was added) still yields a complete config.
         self.hparams = {**self.default_hparams(), **(hparams or {})}
         mel_frames_per_s3m_frame(self.sr, self.hparams["mel_frame_shift_ms"])
-        if (
-            hparams is not None
-            and "drop_closure_release" not in hparams
-            and not {"closure+", "release+"}.issubset(posteriogram.featnames)
-        ):
+        # `hparams or {}`: omitting hparams must behave like passing {}.
+        if "drop_closure_release" not in (hparams or {}) and not {
+            "closure+",
+            "release+",
+        }.issubset(posteriogram.featnames):
             self.hparams["drop_closure_release"] = False
 
     def with_hparams(self, hparams_override):
@@ -345,7 +345,13 @@ class Segmenter:
         with np.errstate(invalid="ignore"):
             return np.prod(stacked, axis=0)
 
-    def segment(self, net_feats, waveform_np, snap_silence=None):
+    def segment(self, net_feats, waveform_np, snap_silence=None, return_signal=False):
+        """Predicted phone boundaries as frame indices.
+
+        With ``return_signal=True`` returns ``(boundaries, signal)``, where
+        ``signal`` is the per-frame combined boundary signal the peaks were
+        picked from, on the same time axis as ``net_feats``.
+        """
         h = self.hparams
         if snap_silence is None:
             snap_silence = h["snap_silence"]
@@ -366,7 +372,7 @@ class Segmenter:
             )
             preds = self._handle_silence(preds, silence_mask, snap_tolerance=h["snap_tolerance"])
 
-        return preds
+        return (preds, signal) if return_signal else preds
 
     def _drop_closure_release_peaks(self, preds, proj_ipa):
         """Drop predicted boundaries that fall on a closure->release merge.
