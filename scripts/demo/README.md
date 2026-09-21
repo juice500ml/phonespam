@@ -53,8 +53,17 @@ cp -r scripts/demo/* hf-space/
 cd hf-space && git add -A && git commit -m "SPAM demo" && git push
 ```
 
-CPU is enough — inference is roughly real-time — but the Space needs disk for
-the encoder and enough RAM to hold it.
+Pick **CPU basic** for the hardware. The app has no GPU code, and on two vCPUs
+it runs about 5x faster than real time: ~0.7 s for the 2.9 s example, ~4 s for
+20 s of audio, in under 3 GB of RAM. Startup takes ~10 s plus the first-boot
+downloads (the 1.2 GB encoder and the 26 MB PHOIBLE table), all of which happen
+once rather than per request.
+
+Do **not** pick ZeroGPU: it only allocates a GPU to functions decorated with
+`@spaces.GPU` and refuses to start when it finds none, failing with
+*"No @spaces.GPU function detected during startup"*. Using it would mean adding
+the `spaces` dependency and moving the model to CUDA inside the decorated
+function — CUDA cannot be initialised at import time under ZeroGPU.
 
 ## Example audio
 
