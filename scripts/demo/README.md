@@ -47,7 +47,7 @@ Controls:
 
 ```bash
 pip install -r requirements.txt
-python app.py
+GRADIO_TEMP_DIR=$PWD/.gradio_tmp python app.py
 ```
 
 First start downloads WavLM-large (~1.2 GB), the phone model, and the PHOIBLE

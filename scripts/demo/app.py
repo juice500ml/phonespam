@@ -143,15 +143,14 @@ def _runs(labels, frame_times, duration):
     return spans
 
 
-def _strip(ax, spans, colour, edge, min_width=0.02):
+def _strip(ax, spans, colour, edge, fontsize=9):
     for start, end, label in spans:
         ax.add_patch(
             plt.Rectangle(
                 (start, 0.05), max(end - start, 1e-4), 0.9, facecolor=colour, edgecolor=edge
             )
         )
-        if end - start > min_width:
-            ax.text((start + end) / 2, 0.5, label, ha="center", va="center", fontsize=9)
+        ax.text((start + end) / 2, 0.5, label, ha="center", va="center", fontsize=fontsize)
     ax.set_ylim(0, 1)
     ax.set_yticks([])
 
@@ -204,7 +203,7 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
     ax_sig.set_title("Combined boundary signal — selected peaks marked", loc="left", fontsize=10)
     ax_sig.margins(x=0)
 
-    _strip(ax_step, stepwise, "#f3e7dc", "#bb9c82", min_width=0.045)
+    _strip(ax_step, stepwise, "#f3e7dc", "#bb9c82", fontsize=6)
     ax_step.set_ylabel("frame-wise")
     ax_step.set_title(
         "Recognition head alone, per frame — no segmentation", loc="left", fontsize=10
