@@ -187,7 +187,9 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
     ax_spam.set_yticks(range(len(order)), [spam.featnames[i] for i in order], fontsize=6)
     ax_spam.set_ylabel("SPAM")
     ax_spam.set_title(
-        f"SPAM: S3M-based Phonological Activation Map ({len(spam.featnames)} channels)", loc="left", fontsize=10
+        f"SPAM: S3M-based Phonological Activation Map ({len(spam.featnames)} channels)",
+        loc="left",
+        fontsize=10,
     )
 
     # Edge frames are NaN (the delta/contrast windows have no room there).
@@ -205,13 +207,13 @@ def _figure(wav, spam, signal, times, edges, labels, stepwise, duration):
 
     _strip(ax_step, stepwise, "#f3e7dc", "#bb9c82", fontsize=6)
     ax_step.set_ylabel("frame-wise")
-    ax_step.set_title(
-        "Recognition head alone, per frame", loc="left", fontsize=10
-    )
+    ax_step.set_title("Recognition head alone, per frame", loc="left", fontsize=10)
 
     _strip(ax_phn, list(zip(edges[:-1], edges[1:], labels, strict=True)), "#dfe7f5", "#8296bb")
     ax_phn.set_ylabel("phones")
-    ax_phn.set_title("Final prediction (using both recognition and segmentation heads)", loc="left", fontsize=10)
+    ax_phn.set_title(
+        "Final prediction (using both recognition and segmentation heads)", loc="left", fontsize=10
+    )
     ax_phn.set_xlabel("Time [s]")
 
     for ax in axes:
@@ -258,9 +260,7 @@ The example is TIMIT's `LDC93S1`: *"{EXAMPLE_TEXT}"*
                 choices=list(LANGUAGES),
                 value=UNCONSTRAINED,
                 label="Phone inventory",
-                info=(
-                    "Restrict recognition to one language's PHOIBLE inventory."
-                ),
+                info=("Restrict recognition to one language's PHOIBLE inventory."),
                 interactive=True,
             )
             run_btn = gr.Button("▶ Run", variant="primary")
