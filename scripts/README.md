@@ -1,11 +1,7 @@
 # scripts/
 
-Demos and paper reproduction. **Nothing here is part of the `phonespam`
-package**: it is not installed by `pip install phonespam`, not importable, and
-the library never imports from it. The package depends on none of it; it all
-depends on the package.
-
-Everything here needs the training extra and a clone of this repo:
+Demos and paper reproduction. Nothing here is part of the `phonespam`
+package. Everything here needs the training extra and a clone of this repo:
 
 ```bash
 pip install -e ".[train]"
@@ -13,7 +9,7 @@ pip install -e ".[train]"
 
 Plus, for anything touching the corpora: `TIMIT` (LDC-licensed, not
 redistributable) and `VoxAngeles`. See [Data](../README.md#data) in the root
-README for where to put them. A GPU is strongly recommended — feature
+README for where to put them. A GPU is recommended — feature
 extraction and evaluation both run an S3M encoder over the full dataset.
 
 ## Reproducing the paper
@@ -51,10 +47,17 @@ TIMIT_ROOT=/path/to/TIMIT VOX_ROOT=/path/to/voxangeles \
 | [`visualizer.ipynb`](visualizer.ipynb) | SPAM heatmaps for individual utterances: pick feature channels, overlay predicted boundaries. |
 | [`plots.ipynb`](plots.ipynb) | The layer-wise and sample-efficiency figures, from numbers pasted in by hand after running the ablations. Writes `plots/*.pdf`. |
 
-The notebooks read sample audio from `plots/`, which is **not** in the repo —
-`LDC93S1.wav`/`.phn` come from TIMIT and cannot be redistributed here. Copy
-them out of your own TIMIT distribution (`TEST/DR1/FAKS0/SA1`, or the
-`LDC93S1` sample) to run those cells.
+The notebooks read sample audio from `plots/`, which is **not** in the repo:
+`LDC93S1` is TIMIT and we cannot redistribute it. LDC publishes that one
+utterance ("She had your dark suit in greasy wash water all year") as a free
+sample, so no TIMIT licence is needed just to run the notebooks:
 
-They also start with `sys.path.append("..")`, which is only needed when working
-from a clone without installing; `pip install -e .` makes it unnecessary.
+```bash
+mkdir -p scripts/plots
+base=https://catalog.ldc.upenn.edu/desc/addenda
+curl -sL -o scripts/plots/LDC93S1.wav "$base/LDC93S1.wav"
+curl -sL -o scripts/plots/LDC93S1.phn "$base/LDC93S1.phn"
+```
+
+The full corpus is still required for everything under
+[Reproducing the paper](#reproducing-the-paper).
