@@ -41,14 +41,13 @@ TIMIT_ROOT=/path/to/TIMIT VOX_ROOT=/path/to/voxangeles \
 
 ## Interactive demo
 
-[`demo/`](demo/) is a Gradio app: record or upload audio and see the
+[`demo/`](demo/) is a Streamlit app: record or upload audio and see the
 spectrogram, the SPAM, the boundary signal and the recognized phones on one
-shared time axis. It doubles as the HuggingFace Space configuration — see
-[`demo/README.md`](demo/README.md).
+shared time axis — see [`demo/README.md`](demo/README.md).
 
 ```bash
 pip install -r demo/requirements.txt
-python demo/app.py
+streamlit run demo/app.py
 ```
 
 ## Notebooks
