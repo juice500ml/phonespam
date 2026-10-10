@@ -1,5 +1,6 @@
 # SPAM
 - SPAM = Self-supervised speech model-based Phonological Activation Mapping
+- Evaluation metrics at [https://github.com/stephenmac7/phone-metrics](https://github.com/stephenmac7/phone-metrics), evaluation framework at [https://github.com/Shikhar-S/Speech-Segmentation](https://github.com/Shikhar-S/Speech-Segmentation)
 - Demo at [https://phonespam.streamlit.app/](https://phonespam.streamlit.app/)
 - Paper accepted to SLT 2026: [Phone Segmentation and Recognition through Phonological Activation Mapping](https://arxiv.org/abs/2607.09020) (Shikhar Bharadwaj∗, Kwanghee Choi∗, Stephen McIntosh∗, Chin-Jou Li, Eunjung Yeo,
 Daisuke Saito, Nobuaki Minematsu, Shinji Watanabe, Jian Zhu, David Harwath and David R. Mortensen)
